@@ -137,7 +137,8 @@ cp src-tauri/.env.example src-tauri/.env
 │   ├── src/
 │   │   ├── serial.rs    # USB CDC, device protocol
 │   │   ├── audio.rs     # Windows volume
-│   │   ├── audio_linux.rs
+│   │   ├── audio_linux.rs   # required for Linux builds (commit this file)
+│   │   ├── media_keys_linux.rs
 │   │   ├── media_keys.rs
 │   │   ├── config.rs
 │   │   └── lib.rs
