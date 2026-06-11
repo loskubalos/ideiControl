@@ -266,7 +266,7 @@ pub fn set_system_volume_impl(level: f32) -> Result<(), String> {
         let channels = default_sink_channels(mainloop, context)?;
         let cv = linear_to_channels(level, channels);
         let op = {
-            let introspector = context.introspect();
+            let mut introspector = context.introspect();
             introspector.set_sink_volume_by_name(DEFAULT_SINK, &cv, None)
         };
         wait_operation(mainloop, &op);
@@ -279,7 +279,7 @@ pub fn set_microphone_volume_impl(level: f32) -> Result<(), String> {
         let channels = default_source_channels(mainloop, context)?;
         let cv = linear_to_channels(level, channels);
         let op = {
-            let introspector = context.introspect();
+            let mut introspector = context.introspect();
             introspector.set_source_volume_by_name(DEFAULT_SOURCE, &cv, None)
         };
         wait_operation(mainloop, &op);
@@ -328,7 +328,7 @@ fn set_sink_input_volume(
 ) -> Result<(), String> {
     let cv = linear_to_channels(level, 2);
     let op = {
-        let introspector = context.introspect();
+        let mut introspector = context.introspect();
         introspector.set_sink_input_volume(index, &cv, None)
     };
     wait_operation(mainloop, &op);
