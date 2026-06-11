@@ -1,8 +1,5 @@
 //! Klawisze mediów i skróty klawiszowe po zdarzeniach `btn` z urządzenia.
 
-#[cfg(target_os = "linux")]
-mod media_keys_linux;
-
 use serde::{Deserialize, Serialize};
 
 /// Liczba przycisków mapowanych w UI (zgodnie z maks. `i` w JSON z firmware).
@@ -273,12 +270,12 @@ pub fn send_button_binding(b: &ButtonBinding) {
 
 #[cfg(target_os = "linux")]
 pub fn send_media_action(action: MediaKeyAction) {
-    media_keys_linux::send_media_action(action);
+    crate::media_keys_linux::send_media_action(action);
 }
 
 #[cfg(target_os = "linux")]
 pub fn send_button_binding(b: &ButtonBinding) {
-    media_keys_linux::send_button_binding(b);
+    crate::media_keys_linux::send_button_binding(b);
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]

@@ -1,6 +1,6 @@
 //! Media keys and keyboard shortcuts on Linux (X11 via enigo).
 
-use super::{ButtonBinding, MediaKeyAction, ModMask};
+use crate::media_keys::{ButtonBinding, MediaKeyAction, ModMask};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 
 fn open_enigo() -> Result<Enigo, String> {

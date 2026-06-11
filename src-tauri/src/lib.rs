@@ -4,6 +4,11 @@ mod media_keys;
 mod serial;
 mod telemetry;
 
+#[cfg(target_os = "linux")]
+mod audio_linux;
+#[cfg(target_os = "linux")]
+mod media_keys_linux;
+
 use std::sync::atomic::Ordering;
 
 use tauri::{

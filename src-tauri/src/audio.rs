@@ -1,8 +1,5 @@
 //! Sterowanie głośnością systemu i sesji aplikacji (Windows: Core Audio, Linux: PulseAudio).
 
-#[cfg(target_os = "linux")]
-mod audio_linux;
-
 use serde::{Deserialize, Serialize};
 
 /// Maksymalna liczba suwaków (wszystkie modele); aktywna liczba zależy od `DeviceInfo.sliders`.
@@ -565,37 +562,37 @@ fn set_session_volume_by_name_impl(app_name: &str, level: f32) -> Result<(), Str
 
 #[cfg(target_os = "linux")]
 fn get_game_pids_impl() -> Result<Vec<u32>, String> {
-    audio_linux::get_game_pids_impl()
+    crate::audio_linux::get_game_pids_impl()
 }
 
 #[cfg(target_os = "linux")]
 fn get_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>, String> {
-    audio_linux::get_audio_sessions_impl()
+    crate::audio_linux::get_audio_sessions_impl()
 }
 
 #[cfg(target_os = "linux")]
 fn get_system_volume_impl() -> Result<f32, String> {
-    audio_linux::get_system_volume_impl()
+    crate::audio_linux::get_system_volume_impl()
 }
 
 #[cfg(target_os = "linux")]
 fn set_system_volume_impl(level: f32) -> Result<(), String> {
-    audio_linux::set_system_volume_impl(level)
+    crate::audio_linux::set_system_volume_impl(level)
 }
 
 #[cfg(target_os = "linux")]
 fn set_microphone_volume_impl(level: f32) -> Result<(), String> {
-    audio_linux::set_microphone_volume_impl(level)
+    crate::audio_linux::set_microphone_volume_impl(level)
 }
 
 #[cfg(target_os = "linux")]
 fn set_session_volume_impl(pid: u32, level: f32) -> Result<(), String> {
-    audio_linux::set_session_volume_impl(pid, level)
+    crate::audio_linux::set_session_volume_impl(pid, level)
 }
 
 #[cfg(target_os = "linux")]
 fn set_session_volume_by_name_impl(app_name: &str, level: f32) -> Result<(), String> {
-    audio_linux::set_session_volume_by_name_impl(app_name, level)
+    crate::audio_linux::set_session_volume_by_name_impl(app_name, level)
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
