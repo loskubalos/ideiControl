@@ -19,7 +19,7 @@ fn pulse_err(msg: &str) -> String {
     )
 }
 
-fn wait_context_ready(mainloop: &Mainloop, context: &Context) -> Result<(), String> {
+fn wait_context_ready(mainloop: &mut Mainloop, context: &Context) -> Result<(), String> {
     loop {
         mainloop.iterate(false);
         match context.get_state() {
@@ -32,7 +32,7 @@ fn wait_context_ready(mainloop: &Mainloop, context: &Context) -> Result<(), Stri
     }
 }
 
-fn wait_operation<F: ?Sized>(mainloop: &Mainloop, op: &pulse::operation::Operation<F>) {
+fn wait_operation<F: ?Sized>(mainloop: &mut Mainloop, op: &pulse::operation::Operation<F>) {
     while op.get_state() != OpState::Done {
         mainloop.iterate(false);
     }
@@ -40,16 +40,16 @@ fn wait_operation<F: ?Sized>(mainloop: &Mainloop, op: &pulse::operation::Operati
 
 fn with_pulse<F, T>(f: F) -> Result<T, String>
 where
-    F: FnOnce(&Mainloop, &mut Context) -> Result<T, String>,
+    F: FnOnce(&mut Mainloop, &mut Context) -> Result<T, String>,
 {
-    let mainloop = Mainloop::new().ok_or_else(|| pulse_err("mainloop"))?;
+    let mut mainloop = Mainloop::new().ok_or_else(|| pulse_err("mainloop"))?;
     let mut context = Context::new(&mainloop, "idei-control")
         .ok_or_else(|| pulse_err("context"))?;
     context
         .connect(None, FlagSet::NOFLAGS, None)
         .map_err(|e| pulse_err(&format!("connect: {:?}", e)))?;
-    wait_context_ready(&mainloop, &context)?;
-    f(&mainloop, &mut context)
+    wait_context_ready(&mut mainloop, &context)?;
+    f(&mut mainloop, &mut context)
 }
 
 fn linear_to_channels(level: f32, channels: u8) -> ChannelVolumes {
@@ -133,14 +133,17 @@ struct SinkInputRow {
     is_game: bool,
 }
 
-fn list_sink_inputs(mainloop: &Mainloop, context: &mut Context) -> Result<Vec<SinkInputRow>, String> {
+fn list_sink_inputs(
+    mainloop: &mut Mainloop,
+    context: &mut Context,
+) -> Result<Vec<SinkInputRow>, String> {
     let rows: Rc<RefCell<Vec<SinkInputRow>>> = Rc::new(RefCell::new(Vec::new()));
     let rows_cb = rows.clone();
     let done = Rc::new(RefCell::new(false));
     let done_cb = done.clone();
 
     {
-        let mut introspector = context.introspect();
+        let introspector = context.introspect();
         introspector.get_sink_input_info_list(move |result| match result {
             pulse::callbacks::ListResult::Item(info) => {
                 let Some(pid) = proplist_pid(&info.proplist) else {
@@ -171,17 +174,18 @@ fn list_sink_inputs(mainloop: &Mainloop, context: &mut Context) -> Result<Vec<Si
         mainloop.iterate(false);
     }
 
-    Ok(std::mem::take(&mut *rows.borrow_mut()))
+    let result = std::mem::take(&mut *rows.borrow_mut());
+    Ok(result)
 }
 
-fn default_sink_channels(mainloop: &Mainloop, context: &mut Context) -> Result<u8, String> {
+fn default_sink_channels(mainloop: &mut Mainloop, context: &mut Context) -> Result<u8, String> {
     let channels: Rc<RefCell<Option<u8>>> = Rc::new(RefCell::new(None));
     let channels_cb = channels.clone();
     let done = Rc::new(RefCell::new(false));
     let done_cb = done.clone();
 
     {
-        let mut introspector = context.introspect();
+        let introspector = context.introspect();
         introspector.get_sink_info_by_name(DEFAULT_SINK, move |result| match result {
             pulse::callbacks::ListResult::Item(info) => {
                 *channels_cb.borrow_mut() = Some(info.sample_spec.channels);
@@ -197,22 +201,18 @@ fn default_sink_channels(mainloop: &Mainloop, context: &mut Context) -> Result<u
         mainloop.iterate(false);
     }
 
-    channels
-        .borrow()
-        .as_ref()
-        .copied()
-        .filter(|c| *c > 0)
-        .ok_or_else(|| pulse_err("Nie znaleziono domyślnego wyjścia audio"))
+    let n = channels.borrow().as_ref().copied().filter(|c| *c > 0);
+    n.ok_or_else(|| pulse_err("Nie znaleziono domyślnego wyjścia audio"))
 }
 
-fn default_source_channels(mainloop: &Mainloop, context: &mut Context) -> Result<u8, String> {
+fn default_source_channels(mainloop: &mut Mainloop, context: &mut Context) -> Result<u8, String> {
     let channels: Rc<RefCell<Option<u8>>> = Rc::new(RefCell::new(None));
     let channels_cb = channels.clone();
     let done = Rc::new(RefCell::new(false));
     let done_cb = done.clone();
 
     {
-        let mut introspector = context.introspect();
+        let introspector = context.introspect();
         introspector.get_source_info_by_name(DEFAULT_SOURCE, move |result| match result {
             pulse::callbacks::ListResult::Item(info) => {
                 *channels_cb.borrow_mut() = Some(info.sample_spec.channels);
@@ -228,12 +228,8 @@ fn default_source_channels(mainloop: &Mainloop, context: &mut Context) -> Result
         mainloop.iterate(false);
     }
 
-    channels
-        .borrow()
-        .as_ref()
-        .copied()
-        .filter(|c| *c > 0)
-        .ok_or_else(|| pulse_err("Nie znaleziono domyślnego mikrofonu"))
+    let n = channels.borrow().as_ref().copied().filter(|c| *c > 0);
+    n.ok_or_else(|| pulse_err("Nie znaleziono domyślnego mikrofonu"))
 }
 
 pub fn get_system_volume_impl() -> Result<f32, String> {
@@ -244,7 +240,7 @@ pub fn get_system_volume_impl() -> Result<f32, String> {
         let done_cb = done.clone();
 
         {
-            let mut introspector = context.introspect();
+            let introspector = context.introspect();
             introspector.get_sink_info_by_name(DEFAULT_SINK, move |result| match result {
                 pulse::callbacks::ListResult::Item(info) => {
                     *level_cb.borrow_mut() = Some(volume_to_linear(info.volume.avg()));
@@ -260,11 +256,8 @@ pub fn get_system_volume_impl() -> Result<f32, String> {
             mainloop.iterate(false);
         }
 
-        level
-            .borrow()
-            .as_ref()
-            .copied()
-            .ok_or_else(|| pulse_err("Brak głośności wyjścia"))
+        let v = level.borrow().as_ref().copied();
+        v.ok_or_else(|| pulse_err("Brak głośności wyjścia"))
     })
 }
 
@@ -273,7 +266,7 @@ pub fn set_system_volume_impl(level: f32) -> Result<(), String> {
         let channels = default_sink_channels(mainloop, context)?;
         let cv = linear_to_channels(level, channels);
         let op = {
-            let mut introspector = context.introspect();
+            let introspector = context.introspect();
             introspector.set_sink_volume_by_name(DEFAULT_SINK, &cv, None)
         };
         wait_operation(mainloop, &op);
@@ -286,7 +279,7 @@ pub fn set_microphone_volume_impl(level: f32) -> Result<(), String> {
         let channels = default_source_channels(mainloop, context)?;
         let cv = linear_to_channels(level, channels);
         let op = {
-            let mut introspector = context.introspect();
+            let introspector = context.introspect();
             introspector.set_source_volume_by_name(DEFAULT_SOURCE, &cv, None)
         };
         wait_operation(mainloop, &op);
@@ -328,14 +321,14 @@ pub fn get_game_pids_impl() -> Result<Vec<u32>, String> {
 }
 
 fn set_sink_input_volume(
-    mainloop: &Mainloop,
+    mainloop: &mut Mainloop,
     context: &mut Context,
     index: u32,
     level: f32,
 ) -> Result<(), String> {
     let cv = linear_to_channels(level, 2);
     let op = {
-        let mut introspector = context.introspect();
+        let introspector = context.introspect();
         introspector.set_sink_input_volume(index, &cv, None)
     };
     wait_operation(mainloop, &op);
