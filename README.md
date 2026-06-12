@@ -1,150 +1,162 @@
 # IDEI Control
 
-Desktop companion app for **IDEI** USB hardware mixers. It reads slider positions over a virtual serial port (USB CDC) and maps them to **system**, **per-app**, **microphone**, or **game** volume on your PC.
+Desktop companion for **IDEI** USB hardware mixers. Slider positions are read over USB CDC and mapped to **system**, **per-app**, **microphone**, or **game** volume — with optional media keys and keyboard shortcuts on device buttons.
 
-Built with **Tauri 2**, **React**, **TypeScript**, and **Rust**.
+| | Windows | Linux |
+|---|---------|-------|
+| **Audio** | Core Audio | PulseAudio (PipeWire-compatible) |
+| **Buttons** | Win32 `SendInput` | X11 via `enigo` |
+| **Installers** | NSIS, MSI | `.deb`, AppImage |
 
-| Platform | Audio | Buttons (media / shortcuts) |
-|----------|-------|-----------------------------|
-| **Windows** | Core Audio | Win32 `SendInput` |
-| **Linux** | PulseAudio (PipeWire-compatible) | X11 via `enigo` |
+**Stack:** [Tauri 2](https://tauri.app/) · React · TypeScript · Rust
 
-Supported devices (handshake): **`ideiMx`** (3 sliders) and **`ideiMx-max`** (5 sliders). Requires IdeiMX STM32 firmware on the device (separate firmware project).
+**Supported hardware:** `ideiMx` (3 sliders) · `ideiMx-max` (5 sliders) — requires [IdeiMX](https://loskubalos.eu.org/ideiMx) STM32 firmware on the device.
+
+---
+
+## Download
+
+Pre-built installers are published on **[GitHub Releases](https://github.com/loskubalos/ideiControl/releases)**.
+
+| Platform | File | Install |
+|----------|------|---------|
+| **Windows** | `IDEI Control_*_x64-setup.exe` or `.msi` | Run the installer |
+| **Linux (general)** | `IDEI Control_*_amd64.AppImage` | `chmod +x` → run |
+| **Linux (Debian/Ubuntu)** | `idei-control_*_amd64.deb` | `sudo dpkg -i idei-control_*.deb` |
+---
+
+## Quick start
+
+1. Install IDEI Control and plug in your mixer over USB.
+2. Open the app and click **Refresh** if the port list is empty.
+3. Select the port (`COMx` on Windows, `/dev/ttyACM0` on Linux) and click **Connect**.
+4. Assign each slider under **Assignments** (System, Mic, App, Games).
+5. Move sliders — assigned volumes update in real time.
+6. Save layouts as **Presets**; map **Buttons** to media keys or shortcuts.
+
+### Linux — USB access
+
+Add your user to the `dialout` group, then log out and back in:
+
+```bash
+sudo usermod -aG dialout "$USER"
+```
+
+If the device is plugged in but never appears, **ModemManager** may be holding the port (common on Ubuntu). Stop it temporarily to test:
+
+```bash
+sudo systemctl stop ModemManager
+```
+
+Unplug the device, plug it back in, and refresh the port list in the app.
+
+### Linux — audio & buttons
+
+- **Volume:** PipeWire or PulseAudio must be running (`pactl info`).
+- **Media keys / shortcuts:** require X11 or XWayland; pure Wayland sessions may not receive simulated keys.
 
 ---
 
 ## Features
 
-- USB CDC connect / auto-reconnect, multi-device by COM port
-- Map each slider to multiple targets (system volume, apps, mic, game category)
-- Presets stored in `localStorage`
-- Per-button actions: media keys or keyboard shortcuts
-- Hardware mute vs PC-handled mute (firmware `SET_HW_MUTE_BTN_MAP`)
-- System tray, optional launch at login
+- USB CDC connect, auto-reconnect, and multi-device support (one port per device)
+- Multiple volume targets per slider
+- Per-app and game-category volume via active audio sessions
+- Presets (stored in `localStorage`)
+- Per-button media keys or keyboard shortcuts
+- Hardware mute vs PC-handled mute (`SET_HW_MUTE_BTN_MAP` firmware command)
+- System tray and optional launch at login
 - Light / dark theme
 
 ---
 
-## Requirements
+## Configuration
 
-### Windows (primary)
+Assignments, last port, and preferences are stored in the OS app-data directory:
 
-- [Node.js](https://nodejs.org/) 20+ (LTS recommended)
+| OS | Path |
+|----|------|
+| Windows | `%APPDATA%\com.idei.control\config.json` |
+| Linux | `~/.config/com.idei.control/config.json` |
+
+---
+
+## Development
+
+### Prerequisites
+
+**Windows**
+
+- [Node.js](https://nodejs.org/) 20+
 - [Rust](https://rustup.rs)
-- **MSVC** — Visual Studio Build Tools → “Desktop development with C++” (for `link.exe`)
+- Visual Studio Build Tools — *Desktop development with C++*
 
-### Linux (build or run)
-
-Ubuntu/Debian example:
+**Linux**
 
 ```bash
 sudo apt install -y build-essential pkg-config libssl-dev \
   libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
   libpulse-dev libx11-dev libxtst-dev
-sudo usermod -aG dialout "$USER"   # serial access — log out & back in
 ```
 
-- **PipeWire** or **PulseAudio** running (`pactl info`)
-- **X11 / XWayland** for simulated media keys and shortcuts on Linux
-
-> Linux installers are **not** produced by `tauri build` on native Windows. Use **WSL2**, a Linux machine, or CI. Windows `.exe` builds work normally on Windows.
-
----
-
-## Quick start (development)
+### Run locally
 
 ```bash
-git clone <your-repo-url>
-cd idei-control   # or whatever you name the repo root (this `app/` folder)
-
+git clone https://github.com/loskubalos/ideiControl.git
+cd idei-control
 npm install
 npm run tauri dev
 ```
 
-First run compiles the Rust backend and opens the window with Vite hot-reload for the UI.
-
----
-
-## Build release
+### Release build
 
 ```bash
-npm install
 npm run tauri build
 ```
 
-**Windows output**
+| Output | Location |
+|--------|----------|
+| Windows `.exe` | `src-tauri/target/release/idei-control.exe` |
+| Windows installers | `src-tauri/target/release/bundle/nsis/` · `bundle/msi/` |
+| Linux `.deb` | `src-tauri/target/release/bundle/deb/` |
+| Linux AppImage | `src-tauri/target/release/bundle/appimage/` |
 
-- `src-tauri/target/release/idei-control.exe`
-- Installers under `src-tauri/target/release/bundle/` (NSIS / MSI)
+### Scripts
 
-**Linux output** (when built on Linux or WSL)
+| Command | Description |
+|---------|-------------|
+| `npm run tauri dev` | Desktop app with hot reload |
+| `npm run tauri build` | Production build and installers |
+| `npm run dev` | Vite dev server (UI only) |
+| `npm run build` | Frontend production bundle |
+| `npm run icon` | Regenerate icons from `src-tauri/app-icon.png` |
+| `npm run lint` | ESLint |
 
-- `src-tauri/target/release/bundle/deb/`
-- `src-tauri/target/release/bundle/appimage/`
+### Optional telemetry
 
----
-
-## How to use
-
-1. **Plug in** the IDEI device (USB). On Windows it appears as `COMx`; on Linux as `/dev/ttyACM0` (typical).
-2. **Open IDEI Control** and pick the port from the dropdown.
-3. Click **Connect**. The app sends `IDENTIFY` and reads device model / slider count.
-4. For each slider, use **Assignments** to add targets:
-   - **System** — master volume  
-   - **Mic** — default microphone  
-   - **App** — a running audio session (by name/PID)  
-   - **Games** — all detected game processes  
-5. Move hardware sliders — assigned volumes update in real time.
-6. **Presets** — save/load slider + button layout (browser `localStorage`).
-7. **Buttons** — map physical buttons to media keys or shortcuts; optional NeoPixel feedback via firmware commands.
-
-Config file (assignments, last port, etc.): OS app data dir, e.g.  
-`%APPDATA%\com.idei.control\config.json` on Windows.
-
----
-
-## Icons
-
-Source image: `src-tauri/app-icon.png`
-
-Regenerate all platform sizes:
-
-```bash
-npm run icon
-```
-
-Output: `src-tauri/icons/` (`icon.ico`, PNGs, etc.). Desktop-only; you can delete `src-tauri/icons/android` and `ios` if present — not used for Windows/Linux desktop builds.
-
----
-
-## Optional telemetry
-
-Anonymous usage events via [Umami](https://umami.is/) (optional, off unless configured).
+Anonymous usage events via [Umami](https://umami.is/). Disabled unless configured at build time:
 
 ```bash
 cp src-tauri/.env.example src-tauri/.env
-# Edit IDEI_TELEMETRY_* — do not commit .env
+# Set IDEI_TELEMETRY_* — do not commit .env
 ```
 
 ---
 
-## Project layout
+## Project structure
 
 ```
-.
-├── src/                 # React UI
+├── src/                      React UI
 ├── src-tauri/
 │   ├── src/
-│   │   ├── serial.rs    # USB CDC, device protocol
-│   │   ├── audio.rs     # Windows volume
-│   │   ├── audio_linux.rs   # required for Linux builds (commit this file)
+│   │   ├── serial.rs         USB CDC and device protocol
+│   │   ├── audio.rs          Windows volume control
+│   │   ├── audio_linux.rs    Linux PulseAudio volume control
+│   │   ├── media_keys.rs     Windows input simulation
 │   │   ├── media_keys_linux.rs
-│   │   ├── media_keys.rs
 │   │   ├── config.rs
 │   │   └── lib.rs
-│   ├── app-icon.png
 │   ├── icons/
-│   ├── capabilities/
 │   └── tauri.conf.json
 ├── package.json
 └── README.md
@@ -152,42 +164,6 @@ cp src-tauri/.env.example src-tauri/.env
 
 ---
 
-## Before pushing to GitHub
-
-This repo should **not** include build artifacts. `.gitignore` already excludes:
-
-- `node_modules/`
-- `dist/`
-- `src-tauri/target/`
-- `.env` / `src-tauri/.env`
-
-From the project root (`app/`):
-
-```bash
-git init
-git add .
-git status   # confirm no node_modules, target, or .env
-git commit -m "Initial commit: IDEI Control"
-git remote add origin <your-repo-url>
-git push -u origin main
-```
-
-If `git status` shows huge folders, stop and check `.gitignore` before committing.
-
----
-
-## Scripts
-
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Vite only (web UI in browser) |
-| `npm run tauri dev` | Full desktop app + hot reload |
-| `npm run tauri build` | Production build + installers |
-| `npm run icon` | Regenerate icons from `app-icon.png` |
-| `npm run lint` | ESLint |
-
----
-
 ## License
 
-Add your license file if you open-source this repo.
+Free for **non-commercial** use. You may use, modify, and redistribute the software and your own versions, provided you keep the same license and do not use it commercially. See [LICENSE](LICENSE).
