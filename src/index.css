@@ -27,45 +27,133 @@ body {
   min-height: 100%;
 }
 
-/* Theme v0 — zmienne semantyczne (light) */
+/* Console UI tokens — dark (default) */
 .app-container {
-  --background: 0 0% 100%;
-  --foreground: 220 13% 18%;
-  --card: 0 0% 100%;
-  --card-foreground: 220 13% 18%;
-  --muted: 220 13% 96%;
-  --muted-foreground: 220 9% 46%;
-  --accent: 157 55% 48%;
-  --accent-foreground: 0 0% 100%;
-  --destructive: 0 84% 60%;
-  --destructive-foreground: 0 0% 100%;
-  --border: 220 13% 91%;
-  --input: 220 13% 91%;
-  --ring: 157 55% 48%;
-  --radius: 0.75rem;
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
-}
-.app-container.dark {
-  --background: 220 18% 8%;
-  --foreground: 220 13% 95%;
-  --card: 220 15% 11%;
-  --card-foreground: 220 13% 95%;
-  --muted: 220 15% 15%;
-  --muted-foreground: 220 9% 60%;
-  --accent: 157 55% 48%;
-  --accent-foreground: 220 18% 8%;
+  --background: 0 0% 4%;
+  --foreground: 0 0% 93%;
+  --card: 0 0% 9%;
+  --card-foreground: 0 0% 93%;
+  --muted: 0 0% 12%;
+  --muted-foreground: 0 0% 55%;
+  --accent: 152 60% 53%;
+  --accent-foreground: 0 0% 5%;
   --destructive: 0 62% 50%;
-  --destructive-foreground: 220 13% 95%;
-  --border: 220 15% 18%;
-  --input: 220 15% 18%;
-  --ring: 157 55% 48%;
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
+  --destructive-foreground: 0 0% 95%;
+  --border: 0 0% 15%;
+  --input: 0 0% 15%;
+  --ring: 152 60% 53%;
+  --radius: 0.625rem;
+
+  --c-bg: #0a0a0a;
+  --c-titlebar: #121212;
+  --c-surface: #141414;
+  --c-card: #161616;
+  --c-elevated: #1f1f1f;
+  --c-popover: #191919;
+  --c-hover: #1a1a1a;
+  --c-chip: #222222;
+  --c-seg: #1a1a1a;
+  --c-seg-active: #2a2a2a;
+  --c-border: #262626;
+  --c-border-strong: #333333;
+  --c-border-soft: #2a2a2a;
+  --c-text: #eeeeee;
+  --c-text-secondary: #cccccc;
+  --c-text-muted: #888888;
+  --c-text-dim: #666666;
+  --c-text-faint: #555555;
+  --c-icon: #999999;
+  --c-toggle-off: #333333;
+  --c-toggle-knob: #0d0d0d;
+  --c-accent: #3ecf8e;
+  --c-danger: #e88a8a;
+  --c-danger-bg: #e24b4a1a;
+  --c-danger-border: #7a2a2a;
+  --c-danger-border-soft: #5c2a2a;
+  --c-warn: #e0a952;
+  --c-warn-bg: #2e2612;
+  --c-warn-border: #5c4a1e;
+  --c-overlay: rgba(0, 0, 0, 0.5);
+  --c-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+
+  background-color: var(--c-bg);
+  color: var(--c-text);
+  font-family: Inter, system-ui, sans-serif;
 }
+
+.app-container.dark {
+  background-color: var(--c-bg);
+  color: var(--c-text);
+}
+
 .app-container.light {
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
+  --background: 0 0% 97%;
+  --foreground: 0 0% 12%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 12%;
+  --muted: 0 0% 94%;
+  --muted-foreground: 0 0% 40%;
+  --accent: 152 55% 40%;
+  --accent-foreground: 0 0% 100%;
+  --destructive: 0 84% 50%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 0 0% 88%;
+  --input: 0 0% 88%;
+  --ring: 152 55% 40%;
+
+  --c-bg: #f3f4f6;
+  --c-titlebar: #e8eaed;
+  --c-surface: #ffffff;
+  --c-card: #ffffff;
+  --c-elevated: #f0f1f3;
+  --c-popover: #ffffff;
+  --c-hover: #eef0f3;
+  --c-chip: #e8eaed;
+  --c-seg: #eef0f3;
+  --c-seg-active: #ffffff;
+  --c-border: #d8dbe0;
+  --c-border-strong: #c5c9d0;
+  --c-border-soft: #d8dbe0;
+  --c-text: #17181c;
+  --c-text-secondary: #3a3d45;
+  --c-text-muted: #6b7280;
+  --c-text-dim: #8b919c;
+  --c-text-faint: #9ca3af;
+  --c-icon: #6b7280;
+  --c-toggle-off: #c5c9d0;
+  --c-toggle-knob: #ffffff;
+  --c-accent: #2db87a;
+  --c-danger: #c43c3b;
+  --c-danger-bg: #fce8e8;
+  --c-danger-border: #e8a0a0;
+  --c-danger-border-soft: #e8b4b4;
+  --c-warn: #b45309;
+  --c-warn-bg: #fff7ed;
+  --c-warn-border: #fdba74;
+  --c-overlay: rgba(15, 23, 42, 0.35);
+  --c-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+
+  background-color: var(--c-bg);
+  color: var(--c-text);
+}
+
+.titlebar-console {
+  background: var(--c-titlebar);
+  border-bottom: 0.5px solid var(--c-border);
+}
+.titlebar-console span {
+  color: var(--c-text-muted) !important;
+}
+.titlebar-console button {
+  color: var(--c-text-muted);
+}
+.titlebar-console button:hover {
+  background: var(--c-hover);
+  color: var(--c-text);
+}
+
+.preset-row:hover {
+  background: var(--c-hover);
 }
 
 /* Przeciąganie okna — natywny region (Windows WebView2, touch/pen) */

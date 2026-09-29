@@ -3,9 +3,24 @@ import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@tauri-apps/api/core'
 import { isEnabled, enable, disable } from '@tauri-apps/plugin-autostart'
 import { TitleBar } from './TitleBar'
-import { IconSliders, IconSettings, IconRefresh, IconX, IconCpu } from './icons'
-import { V0ControllerCard } from './V0ControllerCard'
-import { trackAppStartedOnce, trackTelemetryEvent } from './telemetry'
+import { Settings, ChevronDown } from 'lucide-react'
+import {
+  ACCENT,
+  ChannelDrawer,
+  ChannelStrip,
+  ConnectionPopover,
+  ErrorReportingConsentModal,
+  PresetsRail,
+  SettingsSheet,
+} from './console'
+import type {
+  AppUpdateInfo,
+  Profile,
+  ProfileData,
+  ProfilesState,
+  UpdateDownloadProgress,
+} from './console'
+import { reportError } from './errorReporting'
 import './index.css'
 
 interface DeviceInfo {
@@ -27,7 +42,10 @@ export type VolumeTarget =
 interface AudioSessionInfo {
   pid: number
   name: string
+  exe_name?: string
+  display_name?: string
   is_active?: boolean
+  is_playing?: boolean
   is_game?: boolean
 }
 
@@ -39,6 +57,8 @@ const MEDIA_BUTTON_SLOTS = 5
 
 type Lang = 'pl' | 'en'
 const LANG_STORAGE_KEY = 'idei-lang'
+
+type ShortcutLedMode = 'off' | 'momentary' | 'toggle'
 
 export type MediaKeyAction =
   | 'none'
@@ -66,11 +86,6 @@ export type ButtonBinding =
   | { kind: 'none' }
   | { kind: 'media'; action: MediaKeyAction }
   | { kind: 'shortcut'; vk: number; mods: number; label: string }
-
-const MOD_CTRL = 1
-const MOD_SHIFT = 2
-const MOD_ALT = 4
-const MOD_WIN = 8
 
 function defaultButtonBindings(): ButtonBinding[] {
   // Domyślnie: wszystkie przyciski wyłączone (None).
@@ -103,114 +118,18 @@ function parseButtonBinding(x: unknown): ButtonBinding | null {
   return null
 }
 
-/** Mapowanie `KeyboardEvent.code` → Windows VK (US layout). */
-function keyboardCodeToVk(code: string): number | null {
-  const map: Record<string, number> = {
-    Space: 0x20,
-    Enter: 0x0d,
-    Tab: 0x09,
-    Escape: 0x1b,
-    Backspace: 0x08,
-    Delete: 0x2e,
-    Insert: 0x2d,
-    Home: 0x24,
-    End: 0x23,
-    PageUp: 0x21,
-    PageDown: 0x22,
-    ArrowLeft: 0x25,
-    ArrowUp: 0x26,
-    ArrowRight: 0x27,
-    ArrowDown: 0x28,
-    Minus: 0xbd,
-    Equal: 0xbb,
-    BracketLeft: 0xdb,
-    BracketRight: 0xdd,
-    Backslash: 0xdc,
-    Semicolon: 0xba,
-    Quote: 0xde,
-    Comma: 0xbc,
-    Period: 0xbe,
-    Slash: 0xbf,
-    Backquote: 0xc0,
-    NumpadDecimal: 0x6e,
-    NumpadAdd: 0x6b,
-    NumpadSubtract: 0x6d,
-    NumpadMultiply: 0x6a,
-    NumpadDivide: 0x6f,
-    NumpadEnter: 0x0d,
-  }
-  for (let i = 0; i <= 9; i++) {
-    map[`Digit${i}`] = 0x30 + i
-  }
-  for (let i = 1; i <= 12; i++) {
-    map[`F${i}`] = 0x6f + i
-  }
-  for (let c = 65; c <= 90; c++) {
-    map[`Key${String.fromCharCode(c)}`] = c
-  }
-  for (let i = 0; i <= 9; i++) {
-    map[`Numpad${i}`] = 0x60 + i
-  }
-  return map[code] ?? null
-}
-
-function modifierMask(e: React.KeyboardEvent): number {
-  let m = 0
-  if (e.ctrlKey) m |= MOD_CTRL
-  if (e.shiftKey) m |= MOD_SHIFT
-  if (e.altKey) m |= MOD_ALT
-  if (e.metaKey) m |= MOD_WIN
-  return m
-}
-
-function isModifierCode(code: string): boolean {
-  return (
-    code === 'ControlLeft' ||
-    code === 'ControlRight' ||
-    code === 'ShiftLeft' ||
-    code === 'ShiftRight' ||
-    code === 'AltLeft' ||
-    code === 'AltRight' ||
-    code === 'MetaLeft' ||
-    code === 'MetaRight'
-  )
-}
-
-function shortcutAllowedWithoutModifier(code: string): boolean {
-  if (/^F([1-9]|1[0-2])$/.test(code)) return true
-  return (
-    code === 'Escape' ||
-    code === 'Tab' ||
-    code === 'Delete' ||
-    code === 'Insert' ||
-    code === 'Home' ||
-    code === 'End' ||
-    code === 'PageUp' ||
-    code === 'PageDown' ||
-    code.startsWith('Arrow')
-  )
-}
-
-function shortcutLabelFromEvent(e: React.KeyboardEvent): string {
-  const parts: string[] = []
-  if (e.ctrlKey) parts.push('Ctrl')
-  if (e.shiftKey) parts.push('Shift')
-  if (e.altKey) parts.push('Alt')
-  if (e.metaKey) parts.push('Win')
-  let main = e.key.length === 1 ? e.key.toUpperCase() : e.code
-  if (main.startsWith('Key')) main = main.slice(3)
-  if (main.startsWith('Digit')) main = main.slice(5)
-  if (main === ' ') main = 'Space'
-  parts.push(main)
-  return parts.join('+')
-}
-
 function defaultHwSliderMute(): boolean[] {
   return Array.from({ length: MEDIA_BUTTON_SLOTS }, () => false)
 }
 
-function defaultShortcutMuteLedMap(): boolean[] {
-  return Array.from({ length: MEDIA_BUTTON_SLOTS }, () => false)
+function defaultShortcutLedModes(): ShortcutLedMode[] {
+  return Array.from({ length: MEDIA_BUTTON_SLOTS }, () => 'off' as ShortcutLedMode)
+}
+
+function parseShortcutLedMode(x: unknown): ShortcutLedMode {
+  if (x === 'momentary' || x === 'toggle' || x === 'off') return x
+  if (x === true) return 'momentary'
+  return 'off'
 }
 
 function emptySliderValues(): number[] {
@@ -221,124 +140,182 @@ function emptyAssignments(): VolumeTarget[][] {
   return Array.from({ length: MAX_SLIDERS }, () => [] as VolumeTarget[])
 }
 
-type PresetEntry = {
+/** Legacy localStorage — migracja → backend profiles. */
+type LegacyPresetEntry = {
   id: string
   name: string
-  sliderValues: number[]
-  assignments: VolumeTarget[][]
+  sliderValues?: number[]
+  assignments?: VolumeTarget[][]
   buttonBindings?: ButtonBinding[]
-  /** Stare presety — migrate → buttonBindings. */
   buttonMediaActions?: MediaKeyAction[]
   buttonHwSliderMute?: boolean[]
-  /** Per suwak: Neo przy skrócie — SET_SHORTCUT_MUTE_LED_MAP. */
+  shortcutLedMode?: ShortcutLedMode[]
   shortcutMuteLedMap?: boolean[]
-  /** Stary preset globalny — migrowane do mapy. */
   shortcutMuteLed?: boolean
-}
-
-/** Klucz presetów w storage — rozróżnia modele (np. 3 vs 5 suwaków, różną liczbę przycisków). */
-function devicePresetKey(d: DeviceInfo): string {
-  const m = (d.model || 'unknown').trim() || 'unknown'
-  return `${m}|s${d.sliders}|b${d.buttons ?? 0}`
 }
 
 const LEGACY_PRESETS_KEY = 'idei-presets'
 const PRESETS_BY_MODEL_KEY = 'idei-presets-by-model'
+const PROFILES_MIGRATED_KEY = 'idei-profiles-migrated-v1'
 
-function migratePresetEntry(p: PresetEntry): PresetEntry {
-  const sliderValues = emptySliderValues()
+function legacyPresetToProfileData(p: LegacyPresetEntry): ProfileData {
   const assignments = emptyAssignments()
   for (let i = 0; i < MAX_SLIDERS; i++) {
-    sliderValues[i] = typeof p.sliderValues[i] === 'number' ? p.sliderValues[i] : 0
-    assignments[i] = Array.isArray(p.assignments[i]) ? [...p.assignments[i]] : []
+    assignments[i] = Array.isArray(p.assignments?.[i]) ? [...(p.assignments as VolumeTarget[][])[i]] : []
   }
-  let buttonBindings = defaultButtonBindings()
+  let button_bindings = defaultButtonBindings()
   if (Array.isArray(p.buttonBindings) && p.buttonBindings.length === MEDIA_BUTTON_SLOTS) {
     const parsed = (p.buttonBindings as unknown[]).map(parseButtonBinding)
     if (parsed.every((b): b is ButtonBinding => b != null)) {
-      buttonBindings = parsed
+      button_bindings = parsed
     }
   } else if (Array.isArray(p.buttonMediaActions) && p.buttonMediaActions.length === MEDIA_BUTTON_SLOTS) {
-    buttonBindings = (p.buttonMediaActions as MediaKeyAction[]).map(mediaRowToBinding)
+    button_bindings = (p.buttonMediaActions as MediaKeyAction[]).map(mediaRowToBinding)
   }
-  let buttonHwSliderMute = defaultHwSliderMute()
+  let button_hw_slider_mute = defaultHwSliderMute()
   if (Array.isArray(p.buttonHwSliderMute) && p.buttonHwSliderMute.length === MEDIA_BUTTON_SLOTS) {
-    buttonHwSliderMute = [...p.buttonHwSliderMute]
+    button_hw_slider_mute = [...p.buttonHwSliderMute]
   }
-  let shortcutMuteLedMap = defaultShortcutMuteLedMap()
-  if (Array.isArray(p.shortcutMuteLedMap) && p.shortcutMuteLedMap.length === MEDIA_BUTTON_SLOTS) {
-    shortcutMuteLedMap = [...p.shortcutMuteLedMap]
+  let shortcut_led_mode = defaultShortcutLedModes()
+  if (Array.isArray(p.shortcutLedMode) && p.shortcutLedMode.length === MEDIA_BUTTON_SLOTS) {
+    shortcut_led_mode = p.shortcutLedMode.map(parseShortcutLedMode)
+  } else if (Array.isArray(p.shortcutMuteLedMap) && p.shortcutMuteLedMap.length === MEDIA_BUTTON_SLOTS) {
+    shortcut_led_mode = p.shortcutMuteLedMap.map((b) => (b ? 'momentary' : 'off') as ShortcutLedMode)
   } else if (p.shortcutMuteLed === true) {
-    shortcutMuteLedMap = Array.from({ length: MEDIA_BUTTON_SLOTS }, () => true)
+    shortcut_led_mode = Array.from({ length: MEDIA_BUTTON_SLOTS }, () => 'momentary' as ShortcutLedMode)
   }
-  return {
-    ...p,
-    sliderValues,
-    assignments,
-    buttonBindings,
-    buttonHwSliderMute,
-    shortcutMuteLedMap,
-    buttonMediaActions: undefined,
-    shortcutMuteLed: undefined,
-  }
+  return { volume_assignments: assignments, button_bindings, button_hw_slider_mute, shortcut_led_mode }
 }
 
-function loadPresetsByModel(): Record<string, PresetEntry[]> {
+function collectLegacyPresets(): LegacyPresetEntry[] {
+  const out: LegacyPresetEntry[] = []
   try {
     const raw = localStorage.getItem(PRESETS_BY_MODEL_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as Record<string, unknown>
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const out: Record<string, PresetEntry[]> = {}
-        for (const [k, v] of Object.entries(parsed)) {
-          if (Array.isArray(v)) {
-            out[k] = v.map((p) => migratePresetEntry(p as PresetEntry))
-          }
+        for (const v of Object.values(parsed)) {
+          if (Array.isArray(v)) out.push(...(v as LegacyPresetEntry[]))
         }
-        return out
       }
     }
   } catch {
     /* ignore */
   }
-  try {
-    const raw = localStorage.getItem(LEGACY_PRESETS_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw) as PresetEntry[]
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        const migrated = { __legacy__: parsed.map(migratePresetEntry) }
-        try {
-          localStorage.setItem(PRESETS_BY_MODEL_KEY, JSON.stringify(migrated))
-          localStorage.removeItem(LEGACY_PRESETS_KEY)
-        } catch {
-          /* ignore */
-        }
-        return migrated
+  if (out.length === 0) {
+    try {
+      const raw = localStorage.getItem(LEGACY_PRESETS_KEY)
+      if (raw) {
+        const parsed = JSON.parse(raw) as LegacyPresetEntry[]
+        if (Array.isArray(parsed)) out.push(...parsed)
       }
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
   }
-  return {}
+  return out
 }
 
-function persistPresetsByModel(map: Record<string, PresetEntry[]>) {
+function clearLegacyPresetStorage() {
   try {
-    localStorage.setItem(PRESETS_BY_MODEL_KEY, JSON.stringify(map))
+    localStorage.removeItem(LEGACY_PRESETS_KEY)
+    localStorage.removeItem(PRESETS_BY_MODEL_KEY)
+    localStorage.setItem(PROFILES_MIGRATED_KEY, '1')
   } catch {
     /* ignore */
   }
+}
+
+function profileTargetsConflict(a: VolumeTarget, b: VolumeTarget): boolean {
+  if (a.type === 'system' && b.type === 'system') return true
+  if (a.type === 'mic' && b.type === 'mic') return true
+  if (a.type === 'app' && b.type === 'app') {
+    if (a.pid === b.pid) return true
+    const na = (a.name ?? '').trim().toLowerCase().replace(/\.exe$/i, '')
+    const nb = (b.name ?? '').trim().toLowerCase().replace(/\.exe$/i, '')
+    return na.length > 0 && na === nb
+  }
+  if (a.type === 'category' && b.type === 'category') return a.id === b.id
+  return false
+}
+
+function profileDataFromUi(
+  assignments: VolumeTarget[][],
+  buttonBindings: ButtonBinding[],
+  buttonHwSliderMute: boolean[],
+  shortcutLedMode: ShortcutLedMode[],
+): ProfileData {
+  return {
+    volume_assignments: assignments.map((a) => [...a]),
+    button_bindings: [...buttonBindings],
+    button_hw_slider_mute: [...buttonHwSliderMute],
+    shortcut_led_mode: [...shortcutLedMode],
+  }
+}
+
+function applyProfileDataToUiState(
+  data: ProfileData,
+  setters: {
+    setAssignments: (a: VolumeTarget[][]) => void
+    setButtonBindings: (b: ButtonBinding[]) => void
+    setButtonHwSliderMute: (b: boolean[]) => void
+    setShortcutLedMode: (m: ShortcutLedMode[]) => void
+  },
+  targetsConflict: (a: VolumeTarget, b: VolumeTarget) => boolean,
+) {
+  const sanitized: VolumeTarget[][] = Array.from({ length: MAX_SLIDERS }, () => [])
+  for (let i = 0; i < MAX_SLIDERS; i++) {
+    const kept: VolumeTarget[] = []
+    for (const t of data.volume_assignments[i] ?? []) {
+      let conflict = false
+      for (let j = 0; j < i && !conflict; j++) {
+        for (const u of sanitized[j]) {
+          if (targetsConflict(t, u)) {
+            conflict = true
+            break
+          }
+        }
+      }
+      if (!conflict) kept.push(t)
+    }
+    sanitized[i] = kept
+  }
+  setters.setAssignments(sanitized)
+  setters.setButtonBindings(
+    data.button_bindings?.length === MEDIA_BUTTON_SLOTS
+      ? [...data.button_bindings]
+      : defaultButtonBindings(),
+  )
+  setters.setButtonHwSliderMute(
+    data.button_hw_slider_mute?.length === MEDIA_BUTTON_SLOTS
+      ? [...data.button_hw_slider_mute]
+      : defaultHwSliderMute(),
+  )
+  setters.setShortcutLedMode(
+    data.shortcut_led_mode?.length === MEDIA_BUTTON_SLOTS
+      ? data.shortcut_led_mode.map(parseShortcutLedMode)
+      : defaultShortcutLedModes(),
+  )
+  return sanitized
 }
 
 /** Zamienia surowe komunikaty błędów na krótkie, zrozumiałe dla użytkownika. */
 function formatConnectionError(raw: string): string {
   const s = raw.toLowerCase()
   if (s.includes('timeout') || s.includes('timed out')) return 'Connection timed out — check the USB cable and try again.'
-  if (s.includes('access denied') || s.includes('odmowa dostępu') || s.includes('permission')) return 'Access denied to port — run the app with permissions or close other apps using the device.'
-  if (s.includes('in use') || s.includes('używan') || s.includes('already open')) return 'Port is in use by another application. Close it or disconnect the device.'
-  if (s.includes('not found') || s.includes('nie znaleziono') || s.includes('no device')) return 'Device not found — check the connection and select the port again.'
-  if (s.includes('could not open') || s.includes('failed to open')) return 'Could not open port — check the USB cable and driver.'
-  return raw || 'Connection error. Check the cable and port.'
+  if (s.includes('access denied') || s.includes('odmowa dostępu') || s.includes('permission')) return 'Access denied to HID device — close other apps using it or check permissions.'
+  if (s.includes('in use') || s.includes('używan') || s.includes('already open') || s.includes('busy')) return 'Device is in use by another application.'
+  if (s.includes('not found') || s.includes('nie znaleziono') || s.includes('no device')) return 'Device not found — check the USB cable and try Scan again.'
+  if (s.includes('could not open') || s.includes('failed to open') || s.includes('nie można otworzyć')) return 'Could not open HID device — check the USB cable.'
+  if (s.includes('get info')) return 'Device did not answer Get Info — check firmware / HID interface.'
+  return raw || 'Connection error. Check the USB cable.'
+}
+
+function shortDeviceLabel(path: string, info?: DeviceInfo | null): string {
+  if (info?.model) return info.model
+  if (!path) return '—'
+  const tail = path.split(/[\\/#]/).filter(Boolean).pop() ?? path
+  return tail.length > 24 ? `…${tail.slice(-24)}` : tail
 }
 
 function App() {
@@ -359,7 +336,17 @@ function App() {
   )
   const [audioSessions, setAudioSessions] = useState<AudioSessionInfo[]>([])
   const [autostartEnabled, setAutostartEnabled] = useState(false)
+  const [errorReportingConsent, setErrorReportingConsent] = useState<boolean | null>(null)
+  const [errorConsentReady, setErrorConsentReady] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [appVersion, setAppVersion] = useState('0.1.0')
+  const [appUpdateInfo, setAppUpdateInfo] = useState<AppUpdateInfo | null>(null)
+  const [appUpdateChecking, setAppUpdateChecking] = useState(false)
+  const [appUpdateInstalling, setAppUpdateInstalling] = useState(false)
+  const [appUpdateError, setAppUpdateError] = useState<string | null>(null)
+  const [downloadProgress, setDownloadProgress] = useState<UpdateDownloadProgress | null>(null)
+  const [showConn, setShowConn] = useState(false)
+  const [openDrawer, setOpenDrawer] = useState<number | null>(null)
   const [theme, setTheme] = useState<'dark' | 'light' | 'system'>('system')
   const [lang, setLang] = useState<Lang>(() => {
     try {
@@ -370,29 +357,36 @@ function App() {
     }
   })
   const [splashVisible, setSplashVisible] = useState(true)
-  const [presetsByModel, setPresetsByModel] = useState<Record<string, PresetEntry[]>>(() => loadPresetsByModel())
-  const [activePresetByModel, setActivePresetByModel] = useState<Record<string, string | null>>({})
-  const [shortcutMuteLedMap, setShortcutMuteLedMap] = useState<boolean[]>(() => defaultShortcutMuteLedMap())
+  const [profiles, setProfiles] = useState<Profile[]>([])
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null)
+  const [profileSavedHint, setProfileSavedHint] = useState(false)
+  const [shortcutLedMode, setShortcutLedMode] = useState<ShortcutLedMode[]>(() => defaultShortcutLedModes())
+  const [shortcutLedLatched, setShortcutLedLatched] = useState<boolean[]>(() =>
+    Array.from({ length: MEDIA_BUTTON_SLOTS }, () => false),
+  )
   const [buttonBindings, setButtonBindings] = useState<ButtonBinding[]>(() => defaultButtonBindings())
   const [buttonHwSliderMute, setButtonHwSliderMute] = useState<boolean[]>(() => defaultHwSliderMute())
   const rawValuesRef = useRef<number[]>(emptySliderValues())
-  const perPortStateRef = useRef<Record<string, { sliderValues: number[]; assignments: VolumeTarget[][]; buttonBindings: ButtonBinding[]; buttonHwSliderMute: boolean[]; shortcutMuteLedMap: boolean[] }>>({})
+  const profileSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const profileSavedHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const profilesReadyRef = useRef(false)
+  const perPortStateRef = useRef<
+    Record<
+      string,
+      {
+        sliderValues: number[]
+        assignments: VolumeTarget[][]
+        buttonBindings: ButtonBinding[]
+        buttonHwSliderMute: boolean[]
+        shortcutLedMode: ShortcutLedMode[]
+      }
+    >
+  >({})
   const perPortAssignmentsReadyRef = useRef<Record<string, boolean>>({})
   const device = useMemo(() => (activePort ? connectedDevices[activePort] ?? null : null), [connectedDevices, activePort])
 
-  const parseComNumber = (p: string): number => {
-    const m = /^COM(\d+)$/i.exec((p || '').trim())
-    if (!m) return Number.POSITIVE_INFINITY
-    return Number(m[1])
-  }
-
-  const sortComPorts = (ports: string[]): string[] => {
-    return [...ports].sort((a, b) => {
-      const na = parseComNumber(a)
-      const nb = parseComNumber(b)
-      if (na !== nb) return na - nb
-      return a.localeCompare(b)
-    })
+  const sortDevicePaths = (paths: string[]): string[] => {
+    return [...paths].sort((a, b) => a.localeCompare(b))
   }
 
   const isGamePid = (pid: number) => {
@@ -500,158 +494,201 @@ function App() {
     return null
   }
 
-  const deviceKey = useMemo(() => (device ? devicePresetKey(device) : null), [device])
-  const presets = useMemo(
-    () => (deviceKey ? presetsByModel[deviceKey] ?? [] : []),
-    [presetsByModel, deviceKey],
-  )
-  const activePreset = useMemo(
-    () => (deviceKey ? activePresetByModel[deviceKey] ?? null : null),
-    [activePresetByModel, deviceKey],
-  )
+  const applyProfilesState = useCallback((state: ProfilesState) => {
+    setProfiles(state.profiles ?? [])
+    setActiveProfileId(state.active_profile_id ?? null)
+  }, [])
 
-  /** Jednorazowa migracja starych presetów z `__legacy__` do klucza bieżącego urządzenia. */
+  const showSavedHint = useCallback(() => {
+    setProfileSavedHint(true)
+    if (profileSavedHintTimerRef.current) clearTimeout(profileSavedHintTimerRef.current)
+    profileSavedHintTimerRef.current = setTimeout(() => setProfileSavedHint(false), 1200)
+  }, [])
+
+  const syncUiFromActiveProfile = useCallback((state: ProfilesState) => {
+    const active = state.profiles.find((p) => p.id === state.active_profile_id)
+    if (!active) return
+    applyProfileDataToUiState(
+      active,
+      { setAssignments, setButtonBindings, setButtonHwSliderMute, setShortcutLedMode },
+      profileTargetsConflict,
+    )
+  }, [])
+
+  const assignmentsRef = useRef(assignments)
+  const buttonBindingsRef = useRef(buttonBindings)
+  const buttonHwSliderMuteRef = useRef(buttonHwSliderMute)
+  const shortcutLedModeRef = useRef(shortcutLedMode)
+  assignmentsRef.current = assignments
+  buttonBindingsRef.current = buttonBindings
+  buttonHwSliderMuteRef.current = buttonHwSliderMute
+  shortcutLedModeRef.current = shortcutLedMode
+
+  const scheduleSaveCurrentProfile = useCallback(() => {
+    if (!profilesReadyRef.current || !activeProfileId) return
+    if (profileSaveTimerRef.current) clearTimeout(profileSaveTimerRef.current)
+    profileSaveTimerRef.current = setTimeout(() => {
+      const data = profileDataFromUi(
+        assignmentsRef.current,
+        buttonBindingsRef.current,
+        buttonHwSliderMuteRef.current,
+        shortcutLedModeRef.current,
+      )
+      invoke<ProfilesState>('save_current_profile', { profileData: data })
+        .then((state) => {
+          applyProfilesState(state)
+          showSavedHint()
+        })
+        .catch(() => {})
+    }, 450)
+  }, [activeProfileId, applyProfilesState, showSavedHint])
+
   useEffect(() => {
-    if (!device) return
-    const key = devicePresetKey(device)
-    setPresetsByModel((m) => {
-      const cur = m[key]
-      if (cur && cur.length > 0) return m
-      const legacy = m.__legacy__
-      if (legacy && legacy.length > 0) {
-        const next: Record<string, PresetEntry[]> = { ...m, [key]: legacy.map(migratePresetEntry) }
-        delete next.__legacy__
-        persistPresetsByModel(next)
-        return next
-      }
-      return m
-    })
-  }, [device])
+    let cancelled = false
+    ;(async () => {
+      try {
+        let state = await invoke<ProfilesState>('get_profiles')
+        if (cancelled) return
 
-  const applyPreset = useCallback(
-    (preset: PresetEntry) => {
-      if (!deviceKey) return
-      const m = migratePresetEntry(preset)
-      setSliderValues(m.sliderValues)
-      // Prevent duplicated app/game targets across sliders (avoids volume "fighting").
-      // Keep the first occurrence (lowest slider index) and skip conflicting entries in later sliders.
-      const sanitizedAssignments: VolumeTarget[][] = Array.from({ length: MAX_SLIDERS }, () => [])
-      for (let i = 0; i < MAX_SLIDERS; i++) {
-        const kept: VolumeTarget[] = []
-        for (const t of m.assignments[i]) {
-          let conflict = false
-          for (let j = 0; j < i && !conflict; j++) {
-            for (const u of sanitizedAssignments[j]) {
-              if (targetsConflict(t, u)) {
-                conflict = true
-                break
+        let migratedFlag = false
+        try {
+          migratedFlag = localStorage.getItem(PROFILES_MIGRATED_KEY) === '1'
+        } catch {
+          migratedFlag = false
+        }
+
+        if (!migratedFlag) {
+          const legacy = collectLegacyPresets()
+          if (legacy.length > 0) {
+            const onlyDefault =
+              state.profiles.length === 1 &&
+              (state.profiles[0]?.is_default || state.profiles[0]?.name === 'Default')
+            if (onlyDefault || state.profiles.length === 0) {
+              for (const p of legacy) {
+                const name = (p.name && p.name.trim()) || 'Imported'
+                state = await invoke<ProfilesState>('create_profile', {
+                  name,
+                  baseProfileId: null,
+                  seed: legacyPresetToProfileData(p),
+                })
               }
             }
+            clearLegacyPresetStorage()
+          } else {
+            clearLegacyPresetStorage()
           }
-          if (!conflict) kept.push(t)
         }
-        sanitizedAssignments[i] = kept
+
+        if (cancelled) return
+        applyProfilesState(state)
+        syncUiFromActiveProfile(state)
+        profilesReadyRef.current = true
+      } catch {
+        profilesReadyRef.current = true
       }
-
-      setAssignments(sanitizedAssignments)
-      rawValuesRef.current = m.sliderValues
-      setButtonBindings(m.buttonBindings ?? defaultButtonBindings())
-      setButtonHwSliderMute(m.buttonHwSliderMute ?? defaultHwSliderMute())
-      const smap = m.shortcutMuteLedMap ?? defaultShortcutMuteLedMap()
-      setShortcutMuteLedMap(smap)
-      setActivePresetByModel((prev) => ({ ...prev, [deviceKey]: preset.id }))
-      for (let i = 0; i < MAX_SLIDERS; i++) {
-        if (activePort) invoke('set_volume_assignment', { portName: activePort, sliderIndex: i, targets: sanitizedAssignments[i] }).catch(() => {})
-      }
-      if (activePort) invoke('set_button_bindings', { portName: activePort, bindings: m.buttonBindings ?? defaultButtonBindings() }).catch(() => {})
-      if (activePort) invoke('set_button_hw_slider_mute', { portName: activePort, enabled: m.buttonHwSliderMute ?? defaultHwSliderMute() }).catch(() => {})
-      if (activePort) invoke('set_shortcut_mute_led_map', { portName: activePort, enabled: smap }).catch(() => {})
-    },
-    [deviceKey, targetsConflict, activePort],
-  )
-
-  const saveCurrentToPreset = useCallback(
-    (presetId: string) => {
-      if (!deviceKey) return
-      setPresetsByModel((m) => {
-        const list = m[deviceKey] ?? []
-        const idx = list.findIndex((p) => p.id === presetId)
-        if (idx < 0) return m
-        const prev = list[idx]
-        const updated: PresetEntry = {
-          ...prev,
-          sliderValues: [...sliderValues],
-          assignments: assignments.map((a) => [...a]),
-          buttonBindings: [...buttonBindings],
-          buttonHwSliderMute: [...buttonHwSliderMute],
-          shortcutMuteLedMap: [...shortcutMuteLedMap],
-        }
-        const nextList = list.slice()
-        nextList[idx] = updated
-        const out = { ...m, [deviceKey]: nextList }
-        persistPresetsByModel(out)
-        return out
-      })
-    },
-    [deviceKey, sliderValues, assignments, buttonBindings, buttonHwSliderMute, shortcutMuteLedMap],
-  )
-
-  const addPreset = useCallback(() => {
-    if (!deviceKey) return
-    const entry: PresetEntry = {
-      id: crypto.randomUUID(),
-      name: 'New preset',
-      sliderValues: [...sliderValues],
-      assignments: assignments.map((a) => [...a]),
-      buttonBindings: [...buttonBindings],
-      buttonHwSliderMute: [...buttonHwSliderMute],
-      shortcutMuteLedMap: [...shortcutMuteLedMap],
+    })()
+    return () => {
+      cancelled = true
+      if (profileSaveTimerRef.current) clearTimeout(profileSaveTimerRef.current)
+      if (profileSavedHintTimerRef.current) clearTimeout(profileSavedHintTimerRef.current)
     }
-    setPresetsByModel((m) => {
-      const list = m[deviceKey] ?? []
-      const nextList = [...list, entry]
-      const out = { ...m, [deviceKey]: nextList }
-      persistPresetsByModel(out)
-      return out
-    })
-    setActivePresetByModel((prev) => ({ ...prev, [deviceKey]: entry.id }))
-  }, [deviceKey, sliderValues, assignments, buttonBindings, buttonHwSliderMute, shortcutMuteLedMap])
+    // Jednorazowo przy starcie.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  const renamePreset = useCallback(
-    (id: string, name: string) => {
-      if (!deviceKey) return
-      setPresetsByModel((m) => {
-        const list = m[deviceKey] ?? []
-        const nextList = list.map((p) => (p.id === id ? { ...p, name: name.trim() || p.name } : p))
-        const out = { ...m, [deviceKey]: nextList }
-        persistPresetsByModel(out)
-        return out
-      })
+  const selectProfile = useCallback(
+    async (id: string) => {
+      if (!id || id === activeProfileId) return
+      try {
+        const state = await invoke<ProfilesState>('set_active_profile', { profileId: id })
+        applyProfilesState(state)
+        syncUiFromActiveProfile(state)
+        showSavedHint()
+      } catch {
+        /* ignore */
+      }
     },
-    [deviceKey],
+    [activeProfileId, applyProfilesState, syncUiFromActiveProfile, showSavedHint],
   )
 
-  const deletePreset = useCallback(
-    (id: string) => {
-      if (!deviceKey) return
-      setPresetsByModel((m) => {
-        const list = m[deviceKey] ?? []
-        const nextList = list.filter((p) => p.id !== id)
-        const out = { ...m, [deviceKey]: nextList }
-        persistPresetsByModel(out)
-        return out
-      })
-      setActivePresetByModel((prev) => {
-        if (prev[deviceKey] !== id) return prev
-        return { ...prev, [deviceKey]: null }
-      })
+  const addProfile = useCallback(
+    async (name?: string) => {
+      try {
+        const state = await invoke<ProfilesState>('create_profile', {
+          name: (name && name.trim()) || 'New profile',
+          baseProfileId: null,
+          seed: profileDataFromUi(assignments, buttonBindings, buttonHwSliderMute, shortcutLedMode),
+        })
+        applyProfilesState(state)
+        syncUiFromActiveProfile(state)
+        showSavedHint()
+      } catch {
+        /* ignore */
+      }
     },
-    [deviceKey],
+    [
+      assignments,
+      buttonBindings,
+      buttonHwSliderMute,
+      shortcutLedMode,
+      applyProfilesState,
+      syncUiFromActiveProfile,
+      showSavedHint,
+    ],
+  )
+
+  const duplicateProfile = useCallback(
+    async (id: string) => {
+      const base = profiles.find((p) => p.id === id)
+      if (!base) return
+      try {
+        const state = await invoke<ProfilesState>('create_profile', {
+          name: `${base.name} copy`,
+          baseProfileId: id,
+          seed: null,
+        })
+        applyProfilesState(state)
+        syncUiFromActiveProfile(state)
+        showSavedHint()
+      } catch {
+        /* ignore */
+      }
+    },
+    [profiles, applyProfilesState, syncUiFromActiveProfile, showSavedHint],
+  )
+
+  const renameProfile = useCallback(
+    async (id: string, name: string) => {
+      try {
+        const state = await invoke<ProfilesState>('rename_profile', {
+          profileId: id,
+          newName: name.trim() || 'Profile',
+        })
+        applyProfilesState(state)
+      } catch {
+        /* ignore */
+      }
+    },
+    [applyProfilesState],
+  )
+
+  const deleteProfile = useCallback(
+    async (id: string) => {
+      try {
+        const state = await invoke<ProfilesState>('delete_profile', { profileId: id })
+        applyProfilesState(state)
+        syncUiFromActiveProfile(state)
+        showSavedHint()
+      } catch {
+        /* ignore */
+      }
+    },
+    [applyProfilesState, syncUiFromActiveProfile, showSavedHint],
   )
 
   const runScan = useCallback(() => {
     setScanning(true)
-    invoke('start_scan_idei_ports').catch(() => setScanning(false))
+    invoke('start_scan_idei_devices').catch(() => setScanning(false))
   }, [])
 
   const saveActivePortState = useCallback(() => {
@@ -661,9 +698,9 @@ function App() {
       assignments: assignments.map((a) => [...a]),
       buttonBindings: [...buttonBindings],
       buttonHwSliderMute: [...buttonHwSliderMute],
-      shortcutMuteLedMap: [...shortcutMuteLedMap],
+      shortcutLedMode: [...shortcutLedMode],
     }
-  }, [activePort, sliderValues, assignments, buttonBindings, buttonHwSliderMute, shortcutMuteLedMap])
+  }, [activePort, sliderValues, assignments, buttonBindings, buttonHwSliderMute, shortcutLedMode])
 
   const loadPortState = useCallback((port: string, applyToUi = false) => {
     const local = perPortStateRef.current[port]
@@ -672,7 +709,7 @@ function App() {
       setAssignments(local.assignments)
       setButtonBindings(local.buttonBindings)
       setButtonHwSliderMute(local.buttonHwSliderMute)
-      setShortcutMuteLedMap(local.shortcutMuteLedMap)
+      setShortcutLedMode(local.shortcutLedMode)
       rawValuesRef.current = [...local.sliderValues]
     }
     invoke('get_slider_values', { portName: port }).then((v: unknown) => {
@@ -684,7 +721,7 @@ function App() {
           assignments: cur?.assignments ?? emptyAssignments(),
           buttonBindings: cur?.buttonBindings ?? defaultButtonBindings(),
           buttonHwSliderMute: cur?.buttonHwSliderMute ?? defaultHwSliderMute(),
-          shortcutMuteLedMap: cur?.shortcutMuteLedMap ?? defaultShortcutMuteLedMap(),
+          shortcutLedMode: cur?.shortcutLedMode ?? defaultShortcutLedModes(),
         }
         if (applyToUi) {
           setSliderValues(next)
@@ -704,7 +741,7 @@ function App() {
           assignments: nextAssignments,
           buttonBindings: cur?.buttonBindings ?? defaultButtonBindings(),
           buttonHwSliderMute: cur?.buttonHwSliderMute ?? defaultHwSliderMute(),
-          shortcutMuteLedMap: cur?.shortcutMuteLedMap ?? defaultShortcutMuteLedMap(),
+          shortcutLedMode: cur?.shortcutLedMode ?? defaultShortcutLedModes(),
         }
         if (applyToUi) {
           setAssignments(nextAssignments)
@@ -722,7 +759,7 @@ function App() {
             assignments: cur?.assignments ?? emptyAssignments(),
             buttonBindings: parsed,
             buttonHwSliderMute: cur?.buttonHwSliderMute ?? defaultHwSliderMute(),
-            shortcutMuteLedMap: cur?.shortcutMuteLedMap ?? defaultShortcutMuteLedMap(),
+            shortcutLedMode: cur?.shortcutLedMode ?? defaultShortcutLedModes(),
           }
           if (applyToUi) setButtonBindings(parsed)
         }
@@ -737,23 +774,28 @@ function App() {
           assignments: cur?.assignments ?? emptyAssignments(),
           buttonBindings: cur?.buttonBindings ?? defaultButtonBindings(),
           buttonHwSliderMute: next,
-          shortcutMuteLedMap: cur?.shortcutMuteLedMap ?? defaultShortcutMuteLedMap(),
+          shortcutLedMode: cur?.shortcutLedMode ?? defaultShortcutLedModes(),
         }
         if (applyToUi) setButtonHwSliderMute(next)
       }
     }).catch(() => {})
-    invoke('get_shortcut_mute_led_map', { portName: port }).then((list: unknown) => {
+    invoke('get_shortcut_led_mode', { portName: port }).then((list: unknown) => {
       if (Array.isArray(list) && list.length === MEDIA_BUTTON_SLOTS) {
-        const next = list as boolean[]
+        const next = list.map(parseShortcutLedMode)
         const cur = perPortStateRef.current[port]
         perPortStateRef.current[port] = {
           sliderValues: cur?.sliderValues ?? emptySliderValues(),
           assignments: cur?.assignments ?? emptyAssignments(),
           buttonBindings: cur?.buttonBindings ?? defaultButtonBindings(),
           buttonHwSliderMute: cur?.buttonHwSliderMute ?? defaultHwSliderMute(),
-          shortcutMuteLedMap: next,
+          shortcutLedMode: next,
         }
-        if (applyToUi) setShortcutMuteLedMap(next)
+        if (applyToUi) setShortcutLedMode(next)
+      }
+    }).catch(() => {})
+    invoke('get_shortcut_led_latched', { portName: port }).then((list: unknown) => {
+      if (applyToUi && Array.isArray(list) && list.length === MEDIA_BUTTON_SLOTS) {
+        setShortcutLedLatched(list.map((x) => !!x))
       }
     }).catch(() => {})
   }, [])
@@ -762,13 +804,11 @@ function App() {
     setConnecting(true)
     setError(null)
     try {
-      await invoke('connect_serial', { portName })
-      // Urządzenie ustawiane w evencie device-connected (handshake w tle)
+      await invoke('connect_device', { path: portName })
     } catch (e) {
       setError(formatConnectionError(String(e)))
       setConnecting(false)
     }
-    // setConnecting(false) przy device-connected lub connect-error (w useEffect)
   }, [])
 
   const handleConnect = useCallback(async () => {
@@ -784,7 +824,7 @@ function App() {
     if (!targetPort) return
     saveActivePortState()
     try {
-      await invoke('disconnect_serial', { portName: targetPort })
+      await invoke('disconnect_device', { path: targetPort })
     } catch (e) {
       setError(formatConnectionError(String(e)))
     }
@@ -821,9 +861,47 @@ function App() {
       .catch(() => {})
   }, [ideiPorts])
 
+  useEffect(() => {
+    invoke<string>('get_app_version')
+      .then(setAppVersion)
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined
+    listen<UpdateDownloadProgress>('update-download-progress', (e) => {
+      setDownloadProgress(e.payload)
+    }).then((fn) => {
+      unlisten = fn
+    })
+    return () => {
+      unlisten?.()
+    }
+  }, [])
+
   // Stan autostartu (plugin)
   useEffect(() => {
     isEnabled().then(setAutostartEnabled).catch(() => {})
+  }, [])
+
+  // Zgoda na raportowanie błędów (None → modal onboardingowy)
+  useEffect(() => {
+    invoke<{ error_reporting_consent?: boolean | null }>('get_app_config')
+      .then((cfg) => {
+        const v = cfg?.error_reporting_consent
+        setErrorReportingConsent(typeof v === 'boolean' ? v : null)
+      })
+      .catch(() => setErrorReportingConsent(null))
+      .finally(() => setErrorConsentReady(true))
+  }, [])
+
+  const applyErrorReportingConsent = useCallback(async (enabled: boolean) => {
+    try {
+      await invoke('set_error_reporting_consent', { enabled })
+      setErrorReportingConsent(enabled)
+    } catch {
+      /* ignore */
+    }
   }, [])
 
   // Theme: odczyt z localStorage, zastosowanie
@@ -839,7 +917,16 @@ function App() {
       /* ignore */
     }
   }, [lang])
-  const isDark = theme === 'dark' || (theme === 'system' && typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  const [systemDark, setSystemDark] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches,
+  )
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = () => setSystemDark(mq.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  const isDark = theme === 'dark' || (theme === 'system' && systemDark)
   useEffect(() => {
     localStorage.setItem('idei-theme', theme)
   }, [theme])
@@ -848,11 +935,6 @@ function App() {
   useEffect(() => {
     const t = setTimeout(() => setSplashVisible(false), 1500)
     return () => clearTimeout(t)
-  }, [])
-
-  // Telemetria MVP: start aplikacji.
-  useEffect(() => {
-    trackAppStartedOnce()
   }, [])
 
   const loadAudioSessions = useCallback(() => {
@@ -870,7 +952,7 @@ function App() {
         assignments: assignments.map((a) => [...a]),
         buttonBindings: [...buttonBindings],
         buttonHwSliderMute: [...buttonHwSliderMute],
-        shortcutMuteLedMap: [...shortcutMuteLedMap],
+        shortcutLedMode: [...shortcutLedMode],
       }
     }
     if (activePort) loadPortState(activePort, true)
@@ -929,7 +1011,7 @@ function App() {
       const list = Array.isArray(e.payload) ? e.payload : []
       // Keep already-connected ports visible even if scan can't reopen them right now.
       const connected = Object.keys(connectedDevicesRef.current)
-      const merged = sortComPorts(Array.from(new Set([...list, ...connected])))
+      const merged = sortDevicePaths(Array.from(new Set([...list, ...connected])))
       setIdeiPorts(merged)
       if (list.length > 0) {
         setSelectedPort((prev) => {
@@ -945,12 +1027,11 @@ function App() {
     })
     const unlistenConnected = listen<DeviceInfo>('device-connected-port', (e) => {
       const d = e.payload
-      void trackTelemetryEvent('device_connected', { port: d.port, model: d.model, sliders: d.sliders })
       setConnectedDevices((prev) => ({ ...prev, [d.port]: d }))
       setSelectedPort(d.port)
       setActivePort(d.port)
       perPortAssignmentsReadyRef.current[d.port] = false
-      setIdeiPorts((prev) => sortComPorts(Array.from(new Set([...prev, d.port]))))
+      setIdeiPorts((prev) => sortDevicePaths(Array.from(new Set([...prev, d.port]))))
       setError(null)
       setConnecting(false)
       loadPortState(d.port, false)
@@ -963,13 +1044,13 @@ function App() {
       }
     })
     const unlistenConnectError = listen<string>('connect-error', (e) => {
-      void trackTelemetryEvent('serial_error', { message: String(e.payload ?? 'Connection error') })
+      const raw = String(e.payload ?? 'Connection error')
+      void reportError('HID connect error', { kind: 'hid', message: raw })
       setError(formatConnectionError(e.payload ?? 'Connection error'))
       setConnecting(false)
     })
     const unlistenDisconnect = listen<string>('device-disconnected-port', async (e) => {
       const port = e.payload
-      void trackTelemetryEvent('device_disconnected', { port })
       setConnectedDevices((prev) => {
         const next = { ...prev }
         delete next[port]
@@ -980,13 +1061,14 @@ function App() {
       setActivePort((prev) => {
         if (prev !== port) return prev
         const keys = Object.keys(connectedDevicesRef.current).filter((k) => k !== port)
-        const nextPort = sortComPorts(keys)[0]
+        const nextPort = sortDevicePaths(keys)[0]
         return nextPort ?? null
       })
       if (activePort === port) {
         const z = emptySliderValues()
         setSliderValues(z)
         rawValuesRef.current = [...z]
+        setShortcutLedLatched(Array.from({ length: MEDIA_BUTTON_SLOTS }, () => false))
       }
     })
     const unlistenSliders = listen<{ port: string; values: number[] }>('slider-values-port', (e) => {
@@ -1000,7 +1082,7 @@ function App() {
         assignments: cur?.assignments ?? emptyAssignments(),
         buttonBindings: cur?.buttonBindings ?? defaultButtonBindings(),
         buttonHwSliderMute: cur?.buttonHwSliderMute ?? defaultHwSliderMute(),
-        shortcutMuteLedMap: cur?.shortcutMuteLedMap ?? defaultShortcutMuteLedMap(),
+        shortcutLedMode: cur?.shortcutLedMode ?? defaultShortcutLedModes(),
       }
       if (activePort === p) setSliderValues(next)
     })
@@ -1012,6 +1094,16 @@ function App() {
       const line = `Button ${p.index} (seq ${p.seq})`
       setLog((prev) => [line, ...prev.slice(0, 49)])
     })
+    const unlistenLedLatched = listen<{ port: string; states: boolean[] }>('shortcut-led-latched-port', (e) => {
+      const p = e.payload?.port
+      const states = e.payload?.states
+      if (!p || !Array.isArray(states)) return
+      if (activePort === p) {
+        setShortcutLedLatched(
+          Array.from({ length: MEDIA_BUTTON_SLOTS }, (_, i) => !!states[i]),
+        )
+      }
+    })
     return () => {
       unlistenScan.then((u) => u())
       unlistenConnected.then((u) => u())
@@ -1021,906 +1113,340 @@ function App() {
       unlistenSliders.then((u) => u())
       unlistenLog.then((u) => u())
       unlistenBtn.then((u) => u())
+      unlistenLedLatched.then((u) => u())
     }
   }, [connectToPort, loadPortState, activePort, connectedDevices])
 
   const isSelectedConnected = !!(selectedPort && connectedDevices[selectedPort])
 
+  const sliderCount = device?.sliders ?? 0
+
+  useEffect(() => {
+    setOpenDrawer(null)
+  }, [activePort, sliderCount])
+
   return (
-    <div className={`app-container flex flex-col h-full min-h-full overflow-hidden rounded-2xl ${isDark ? 'dark' : 'light'}`}>
+    <div className={`app-container console-ui flex flex-col h-full min-h-full overflow-hidden rounded-2xl ${isDark ? 'dark' : 'light'}`}>
       {splashVisible && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center rounded-2xl bg-background">
+        <div className="fixed inset-0 z-[200] flex items-center justify-center rounded-2xl" style={{ background: 'var(--c-bg)' }}>
           <div className="flex flex-col items-center gap-4">
-            <div className="w-16 h-16 rounded-2xl bg-accent/20 flex items-center justify-center">
-              <span className="text-3xl"><img src='/assets/logo.png'></img></span>
+            <div className="w-16 h-16 rounded-2xl flex items-center justify-center" style={{ background: 'color-mix(in srgb, var(--c-accent) 20%, transparent)' }}>
+              <img src="/assets/logo.png" alt="" />
             </div>
-            <span className="text-lg font-medium text-foreground">IDEI Control</span>
-            <span className="text-sm text-muted-foreground">Loading…</span>
+            <span style={{ fontSize: 16, color: 'var(--c-text)' }}>IDEI Control</span>
+            <span style={{ fontSize: 13, color: 'var(--c-text-dim)' }}>Loading…</span>
           </div>
         </div>
       )}
 
       <TitleBar />
-      <div className="flex-1 min-h-0 overflow-auto p-6">
-        <div className="mx-auto max-w-7xl space-y-6">
-          {/* Pasek statusu (v0) */}
-          <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-card p-4">
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-3">
-                <div className={`h-3 w-3 rounded-full ${device ? 'bg-accent' : 'bg-muted-foreground'} ${device ? 'animate-pulse' : ''}`} />
-                <div>
-                  <p className="text-sm font-medium text-foreground">
-                    {device ? 'Connected' : 'Disconnected'}
-                  </p>
-                  {device && (
-                    <p className="text-xs text-muted-foreground">
-                      {device.port}
-                      {device.fw != null && device.fw !== '' && (
-                        <span className="ml-2 opacity-80">· fw {device.fw}</span>
-                      )}
-                    </p>
-                  )}
-                </div>
-              </div>
-              {error && (
-                <p className="text-xs text-destructive break-words max-w-xs" role="alert">{error}</p>
-              )}
-            </div>
-
-            <div className="flex items-center gap-3">
-              <select
-                value={selectedPort}
-                onChange={(e) => {
-                  const port = e.target.value
-                  setSelectedPort(port)
-                  if (connectedDevices[port]) {
-                    setActivePort(port)
-                  }
+      <div className="flex-1 min-h-0 overflow-auto" style={{ background: 'var(--c-bg)', padding: 24, color: 'var(--c-text)' }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              paddingBottom: 16,
+              borderBottom: '0.5px solid var(--c-border)',
+              marginBottom: 20,
+              position: 'relative',
+            }}
+          >
+            <div
+              onClick={() => setShowConn((v) => !v)}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--c-text-muted)', cursor: 'pointer' }}
+            >
+              <span
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: '50%',
+                  background: device ? ACCENT : 'var(--c-text-faint)',
+                  display: 'inline-block',
+                  boxShadow: device ? `0 0 8px ${ACCENT}` : 'none',
                 }}
-                disabled={scanning}
-                className="rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-              >
-                  {ideiPorts.length === 0 && !scanning && <option value="">— none found —</option>}
-                  {scanning && ideiPorts.length === 0 && <option value="">Scanning…</option>}
-                  {ideiPorts.map((name) => {
-                    const info = connectedDevices[name]
-                    const label = info ? `${info.model} · ${name}` : name
-                    return (
-                      <option key={name} value={name}>
-                        {label}
-                      </option>
-                    )
-                  })}
-              </select>
-              <button
-                type="button"
-                onClick={handleConnect}
-                disabled={!selectedPort || connecting || scanning || isSelectedConnected}
-                className="rounded-lg px-4 py-2 text-sm font-medium transition-colors bg-accent text-accent-foreground hover:bg-accent/90 disabled:opacity-50"
-              >
-                {connecting ? 'Connecting…' : isSelectedConnected ? 'Connected' : 'Connect'}
-              </button>
-              <button
-                type="button"
-                onClick={handleDisconnect}
-                disabled={!activePort || connecting}
-                className="rounded-lg px-4 py-2 text-sm font-medium transition-colors bg-destructive text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
-              >
-                Disconnect
-              </button>
-              <button
-                type="button"
-                onClick={runScan}
-                disabled={scanning}
-                className="rounded-lg border border-border bg-card p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
-              >
-                <IconRefresh className="h-5 w-5" />
-              </button>
+              />
+              <span style={{ color: 'var(--c-text)' }}>{device ? device.model : lang === 'pl' ? 'Brak urządzenia' : 'No device'}</span>
+              <span style={{ color: 'var(--c-text-dim)' }}>
+                · {device ? shortDeviceLabel(device.port, device) : selectedPort ? shortDeviceLabel(selectedPort) : '—'}
+              </span>
+              <ChevronDown
+                size={13}
+                color="var(--c-text-dim)"
+                style={{ transform: showConn ? 'rotate(180deg)' : undefined, transition: 'transform 0.15s' }}
+              />
+            </div>
+            {showConn && (
+              <ConnectionPopover
+                lang={lang}
+                devices={ideiPorts}
+                selectedPath={selectedPort}
+                connectedDevices={connectedDevices}
+                scanning={scanning}
+                connecting={connecting}
+                isSelectedConnected={isSelectedConnected}
+                canDisconnect={!!activePort}
+                onSelectDevice={(path) => {
+                  setSelectedPort(path)
+                  if (connectedDevices[path]) setActivePort(path)
+                }}
+                onConnect={handleConnect}
+                onDisconnect={() => {
+                  void handleDisconnect()
+                  setShowConn(false)
+                }}
+                onScan={runScan}
+              />
+            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, color: 'var(--c-text-dim)' }}>
+              {error && (
+                <span style={{ color: 'var(--c-danger)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} role="alert">
+                  {error}
+                </span>
+              )}
+              {device?.fw ? <span>fw {device.fw}</span> : null}
               <button
                 type="button"
                 onClick={() => setSettingsOpen(true)}
-                className="rounded-lg border border-border bg-card p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                aria-label="Settings"
+                style={{ background: 'transparent', border: 'none', color: 'var(--c-text-muted)', cursor: 'pointer', display: 'flex' }}
               >
-                <IconSettings className="h-5 w-5" />
+                <Settings size={16} />
               </button>
             </div>
           </div>
-          {/* Karty suwaków (v0) — items-start żeby karty nie rozciągały się na równą wysokość */}
-          <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 items-start">
-            {device && device.sliders > 0
-              ? Array.from({ length: device.sliders }, (_, i) => (
-                  <V0ControllerCard
+
+          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+            <div
+              style={{
+                flex: 1,
+                display: 'grid',
+                gridTemplateColumns: `repeat(${Math.max(sliderCount, 1)}, minmax(0, 1fr))`,
+                gap: 14,
+                alignContent: 'start',
+              }}
+            >
+              {sliderCount > 0 ? (
+                Array.from({ length: sliderCount }, (_, i) => (
+                  <ChannelStrip
                     key={i}
-                    index={i + 1}
-                    sliderIndex={i}
-                    lang={lang}
-                    showButtonMapping={i < MEDIA_BUTTON_SLOTS}
-                    binding={buttonBindings[i] ?? { kind: 'none' }}
-                    onBindingChange={(b) => {
-                      const next = [...buttonBindings]
-                      while (next.length < MEDIA_BUTTON_SLOTS) next.push({ kind: 'none' })
-                      next[i] = b
-                      setButtonBindings(next)
-                      if (activePort) invoke('set_button_bindings', { portName: activePort, bindings: next }).catch(() => {})
-                    }}
-                    hwSliderMute={!!buttonHwSliderMute[i]}
-                    onHwSliderMuteChange={(v) => {
-                      const next = [...buttonHwSliderMute]
-                      while (next.length < MEDIA_BUTTON_SLOTS) next.push(false)
-                      next[i] = v
-                      setButtonHwSliderMute(next)
-                      if (activePort) invoke('set_button_hw_slider_mute', { portName: activePort, enabled: next }).catch(() => {})
-                    }}
-                    shortcutNeoOnShortcut={!!shortcutMuteLedMap[i]}
-                    onShortcutNeoChange={(v) => {
-                      const next = [...shortcutMuteLedMap]
-                      while (next.length < MEDIA_BUTTON_SLOTS) next.push(false)
-                      next[i] = v
-                      setShortcutMuteLedMap(next)
-                      if (activePort) invoke('set_shortcut_mute_led_map', { portName: activePort, enabled: next }).catch(() => {})
-                    }}
+                    index={i}
                     value={sliderValues[i] ?? 0}
                     targets={assignments[i] ?? []}
-                    assignmentError={assignmentErrorBySlider[i] ?? null}
-                    audioSessions={audioSessions}
-                    loadAudioSessions={loadAudioSessions}
-                    onAssignmentsChange={(targets) => {
-                      const reason =
-                        conflictReason(i, targets, assignments, lang) ??
-                        conflictReasonAcrossDevices(activePort, i, targets, assignments, lang)
-                      if (reason) {
-                        setLog((prev) => [reason, ...prev.slice(0, 49)])
-                        setAssignmentErrorBySlider((prev) => {
-                          const next = [...prev]
-                          next[i] = reason
-                          return next
-                        })
-                        return false
-                      }
-                      setAssignmentErrorBySlider((prev) => {
-                        const next = [...prev]
-                        next[i] = null
-                        return next
-                      })
-                      setAssignments((prev) => {
-                        const next = [...prev]
-                        next[i] = targets
-                        if (activePort) {
-                          const cur = perPortStateRef.current[activePort]
-                          perPortStateRef.current[activePort] = {
-                            sliderValues: cur?.sliderValues ?? [...sliderValues],
-                            assignments: next.map((a) => [...a]),
-                            buttonBindings: cur?.buttonBindings ?? [...buttonBindings],
-                            buttonHwSliderMute: cur?.buttonHwSliderMute ?? [...buttonHwSliderMute],
-                            shortcutMuteLedMap: cur?.shortcutMuteLedMap ?? [...shortcutMuteLedMap],
-                          }
-                        }
-                        return next
-                      })
-                      if (activePort) invoke('set_volume_assignment', { portName: activePort, sliderIndex: i, targets }).catch(() => {})
-                      return true
-                    }}
+                    binding={buttonBindings[i] ?? { kind: 'none' }}
+                    isOpen={openDrawer === i}
+                    lang={lang}
+                    allAssignments={assignments}
+                    onToggle={() => setOpenDrawer(openDrawer === i ? null : i)}
                   />
                 ))
-              : null}
-          </div>
-
-          {/* Presety + karta urządzenia (v0) */}
-          <div className="grid gap-6 lg:grid-cols-3">
-            <div className="rounded-xl border border-border bg-card p-6 shadow-sm lg:col-span-2">
-              <h3 className="text-sm font-medium uppercase tracking-wide text-muted-foreground mb-1">
-                Presets
-              </h3>
-              <p className="text-xs text-muted-foreground mb-4">
-                Presets are stored per device model (sliders / buttons). Connect your hardware to see and edit its list. Load applies sliders, assignments, and per-slider button mapping; &quot;Save here&quot; overwrites that preset.
-              </p>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {presets.map((preset) => {
-                  const count = preset.assignments.reduce((n, row) => n + row.length, 0)
-                  const isLoaded = activePreset === preset.id
-                  return (
-                    <div
-                      key={preset.id}
-                      className={`rounded-xl border p-4 text-left transition-all ${
-                        isLoaded ? 'border-accent bg-accent/10' : 'border-border bg-background hover:border-accent/50'
-                      } ${!device ? 'opacity-60' : ''}`}
-                    >
-                      <div className="flex items-center justify-between gap-2 mb-2">
-                        <input
-                          type="text"
-                          value={preset.name}
-                          onChange={(e) => renamePreset(preset.id, e.target.value)}
-                          placeholder="Preset name"
-                          disabled={!device}
-                          className="flex-1 min-w-0 rounded border border-transparent bg-transparent px-1.5 py-0.5 text-base font-semibold text-foreground outline-none placeholder:text-muted-foreground focus:border-border focus:bg-background disabled:cursor-not-allowed"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); deletePreset(preset.id) }}
-                          disabled={!device}
-                          className="shrink-0 rounded p-1 text-muted-foreground hover:text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-50"
-                          aria-label="Delete preset"
-                        >
-                          <IconX className="h-4 w-4" />
-                        </button>
-                      </div>
-                      <p className="text-xs text-muted-foreground mb-3">
-                        {count} assignment{count !== 1 ? 's' : ''}
-                      </p>
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={() => applyPreset(preset)}
-                          disabled={!device}
-                          className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none ${
-                            isLoaded
-                              ? 'bg-accent text-accent-foreground cursor-default'
-                              : 'bg-accent text-accent-foreground hover:opacity-90'
-                          }`}
-                        >
-                          {isLoaded ? 'Loaded' : 'Load'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => saveCurrentToPreset(preset.id)}
-                          disabled={!device}
-                          className="flex-1 rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50 disabled:pointer-events-none"
-                        >
-                          Save here
-                        </button>
-                      </div>
-                    </div>
-                  )
-                })}
-                <button
-                  type="button"
-                  onClick={addPreset}
-                  disabled={!device}
-                  className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-border bg-background/50 p-6 text-muted-foreground transition-colors hover:border-accent hover:text-accent hover:bg-accent/5 min-h-[140px] disabled:opacity-50 disabled:pointer-events-none"
+              ) : (
+                <div
+                  style={{
+                    gridColumn: '1 / -1',
+                    background: 'var(--c-card)',
+                    border: '0.5px solid var(--c-border)',
+                    borderRadius: 10,
+                    padding: 28,
+                    color: 'var(--c-text-dim)',
+                    fontSize: 13,
+                    textAlign: 'center',
+                  }}
                 >
-                  <span className="text-2xl">+</span>
-                  <span className="text-sm font-medium">Save current as new preset</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="rounded-xl border border-border bg-card p-6 shadow-sm">
-              <h3 className="mb-4 text-sm font-medium uppercase tracking-wide text-muted-foreground">
-                Connected device
-              </h3>
-              {device ? (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-4">
-                    <div className="rounded-lg bg-accent/10 p-3">
-                      <IconCpu className="h-8 w-8 text-accent" />
-                    </div>
-                    <div>
-                      <div className="font-semibold text-foreground">{device.model}</div>
-                      <div className="text-xs text-muted-foreground">{device.port}</div>
-                    </div>
-                  </div>
-                  <div className="space-y-2 border-t border-border pt-4 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Port</span>
-                      <span className="font-mono text-foreground">{device.port}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Sliders</span>
-                      <span className="font-mono text-foreground">{device.sliders}</span>
-                    </div>
-                    {device.proto != null && (
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Protocol</span>
-                        <span className="font-mono text-foreground">{device.proto}</span>
-                      </div>
-                    )}
-                    {device.fw != null && device.fw !== '' && (
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Firmware</span>
-                        <span className="font-mono text-foreground">{device.fw}</span>
-                      </div>
-                    )}
-                    {device.buttons != null && (
-                      <div className="flex justify-between">
-                        <span className="text-muted-foreground">Buttons</span>
-                        <span className="font-mono text-foreground">{device.buttons}</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                ) : (
-                <div className="flex min-h-[200px] items-center justify-center">
-                  <div className="text-center">
-                    <div className="mx-auto mb-3 rounded-lg bg-muted p-4">
-                      <IconCpu className="h-12 w-12 text-muted-foreground" />
-                    </div>
-                    <p className="text-sm text-muted-foreground">No device connected</p>
-                    <p className="mt-1 text-xs text-muted-foreground">Select a port and click Connect</p>
-                  </div>
+                  {lang === 'pl'
+                    ? 'Podłącz urządzenie ideiMx, aby zobaczyć suwaki.'
+                    : 'Connect an ideiMx device to see sliders.'}
                 </div>
               )}
+              {openDrawer !== null && sliderCount > 0 && openDrawer < sliderCount && (
+                <ChannelDrawer
+                  index={openDrawer}
+                  lang={lang}
+                  showButtonMapping={openDrawer < MEDIA_BUTTON_SLOTS}
+                  targets={assignments[openDrawer] ?? []}
+                  binding={buttonBindings[openDrawer] ?? { kind: 'none' }}
+                  hwSliderMute={!!buttonHwSliderMute[openDrawer]}
+                  shortcutLedMode={shortcutLedMode[openDrawer] ?? 'off'}
+                  shortcutLedLatched={!!shortcutLedLatched[openDrawer]}
+                  audioSessions={audioSessions}
+                  allAssignments={assignments}
+                  assignmentError={assignmentErrorBySlider[openDrawer] ?? null}
+                  loadAudioSessions={loadAudioSessions}
+                  onClose={() => setOpenDrawer(null)}
+                  onBindingChange={(b) => {
+                    const next = [...buttonBindings]
+                    while (next.length < MEDIA_BUTTON_SLOTS) next.push({ kind: 'none' })
+                    next[openDrawer] = b
+                    buttonBindingsRef.current = next
+                    setButtonBindings(next)
+                    if (activePort) invoke('set_button_bindings', { portName: activePort, bindings: next }).catch(() => {})
+                    scheduleSaveCurrentProfile()
+                  }}
+                  onHwSliderMuteChange={(v) => {
+                    const next = [...buttonHwSliderMute]
+                    while (next.length < MEDIA_BUTTON_SLOTS) next.push(false)
+                    next[openDrawer] = v
+                    buttonHwSliderMuteRef.current = next
+                    setButtonHwSliderMute(next)
+                    if (activePort) invoke('set_button_hw_slider_mute', { portName: activePort, enabled: next }).catch(() => {})
+                    scheduleSaveCurrentProfile()
+                  }}
+                  onShortcutLedModeChange={(mode) => {
+                    const next = [...shortcutLedMode]
+                    while (next.length < MEDIA_BUTTON_SLOTS) next.push('off')
+                    next[openDrawer] = mode
+                    shortcutLedModeRef.current = next
+                    setShortcutLedMode(next)
+                    if (mode !== 'toggle') {
+                      setShortcutLedLatched((prev) => {
+                        const n = [...prev]
+                        while (n.length < MEDIA_BUTTON_SLOTS) n.push(false)
+                        n[openDrawer] = false
+                        return n
+                      })
+                    }
+                    if (activePort) invoke('set_shortcut_led_mode', { portName: activePort, modes: next }).catch(() => {})
+                    scheduleSaveCurrentProfile()
+                  }}
+                  onAssignmentsChange={(targets) => {
+                    const i = openDrawer
+                    const reason =
+                      conflictReason(i, targets, assignments, lang) ??
+                      conflictReasonAcrossDevices(activePort, i, targets, assignments, lang)
+                    if (reason) {
+                      setLog((prev) => [reason, ...prev.slice(0, 49)])
+                      setAssignmentErrorBySlider((prev) => {
+                        const next = [...prev]
+                        next[i] = reason
+                        return next
+                      })
+                      return false
+                    }
+                    setAssignmentErrorBySlider((prev) => {
+                      const next = [...prev]
+                      next[i] = null
+                      return next
+                    })
+                    setAssignments((prev) => {
+                      const next = [...prev]
+                      next[i] = targets
+                      assignmentsRef.current = next.map((a) => [...a])
+                      if (activePort) {
+                        const cur = perPortStateRef.current[activePort]
+                        perPortStateRef.current[activePort] = {
+                          sliderValues: cur?.sliderValues ?? [...sliderValues],
+                          assignments: next.map((a) => [...a]),
+                          buttonBindings: cur?.buttonBindings ?? [...buttonBindings],
+                          buttonHwSliderMute: cur?.buttonHwSliderMute ?? [...buttonHwSliderMute],
+                          shortcutLedMode: cur?.shortcutLedMode ?? [...shortcutLedMode],
+                        }
+                      }
+                      return next
+                    })
+                    if (activePort) invoke('set_volume_assignment', { portName: activePort, sliderIndex: i, targets }).catch(() => {})
+                    scheduleSaveCurrentProfile()
+                    return true
+                  }}
+                />
+              )}
             </div>
+            <PresetsRail
+              modelLabel={device?.model ?? '—'}
+              lang={lang}
+              profiles={profiles}
+              activeId={activeProfileId}
+              savedHint={profileSavedHint}
+              onSelect={selectProfile}
+              onRename={renameProfile}
+              onDuplicate={duplicateProfile}
+              onDelete={deleteProfile}
+              onAdd={addProfile}
+            />
           </div>
         </div>
       </div>
 
-      {/* Modal ustawień (v0) */}
       {settingsOpen && (
-        <div className="fixed inset-0 z-[150] flex items-center justify-center bg-black/50 p-6" onClick={() => setSettingsOpen(false)}>
-          <div className="w-full max-w-3xl max-h-[90vh] overflow-y-auto rounded-xl border border-border bg-card p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="mb-6 flex items-center justify-between">
-              <h2 className="text-xl font-semibold text-foreground">{lang === 'pl' ? 'Ustawienia' : 'Settings'}</h2>
-              <button type="button" onClick={() => setSettingsOpen(false)} className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground">
-                <IconX className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="grid gap-6 md:grid-cols-2">
-              <div className="space-y-6">
-                <div>
-                  <label className="mb-3 block text-sm font-medium text-foreground">
-                    {lang === 'pl' ? 'Motyw' : 'Theme'}
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    {(['system', 'light', 'dark'] as const).map((t) => (
-                      <button
-                        key={t}
-                        type="button"
-                        onClick={() => setTheme(t)}
-                        className={`rounded-lg border px-4 py-2 text-sm transition-colors ${
-                          theme === t ? 'border-accent bg-accent text-accent-foreground' : 'border-border bg-background text-foreground hover:bg-muted'
-                        }`}
-                      >
-                        {t === 'system' ? 'System' : t === 'light' ? (lang === 'pl' ? 'Jasny' : 'Light') : lang === 'pl' ? 'Ciemny' : 'Dark'}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <label className="mb-3 block text-sm font-medium text-foreground">
-                    {lang === 'pl' ? 'Język' : 'Language'}
-                  </label>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setLang('pl')}
-                      className={`rounded-lg border px-4 py-2 text-sm transition-colors ${
-                        lang === 'pl'
-                          ? 'border-accent bg-accent text-accent-foreground'
-                          : 'border-border bg-background text-foreground hover:bg-muted'
-                      }`}
-                    >
-                      Polski
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setLang('en')}
-                      className={`rounded-lg border px-4 py-2 text-sm transition-colors ${
-                        lang === 'en'
-                          ? 'border-accent bg-accent text-accent-foreground'
-                          : 'border-border bg-background text-foreground hover:bg-muted'
-                      }`}
-                    >
-                      English
-                    </button>
-                  </div>
-                </div>
-                <div className="flex items-center justify-between rounded-lg border border-border bg-background p-4">
-                  <label className="text-sm font-medium text-foreground">
-                    {lang === 'pl' ? 'Uruchamiaj przy starcie systemu' : 'Launch at system startup'}
-                  </label>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      const v = !autostartEnabled
-                      try {
-                        if (v) await enable(); else await disable()
-                        setAutostartEnabled(v)
-                        await invoke('save_autostart_preference', { enabled: v })
-                      } catch { /* ignore */ }
-                    }}
-                    className={`relative h-6 w-11 rounded-full transition-colors ${autostartEnabled ? 'bg-accent' : 'bg-muted'}`}
-                  >
-                    <div className={`absolute top-1 h-4 w-4 rounded-full bg-white transition-transform ${autostartEnabled ? 'translate-x-6' : 'translate-x-1'}`} />
-                  </button>
-                </div>
-              </div>
-              <div className="flex flex-col gap-4">
-                <div>
-                  <h3 className="mb-3 text-sm font-medium text-foreground">
-                    {lang === 'pl' ? 'Rejestr zdarzeń' : 'Event log'}
-                  </h3>
-                  <div className="h-48 overflow-y-auto rounded-lg border border-border bg-background p-3">
-                    <div className="space-y-2">
-                      {log.map((line, i) => (
-                        <div key={i} className="rounded border-l-2 border-accent bg-card px-3 py-2 font-mono text-xs">
-                          <div className="text-foreground">{line}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                <div className="rounded-lg border border-border bg-background p-4">
-                  <h4 className="mb-2 text-sm font-medium text-foreground">
-                    {lang === 'pl' ? 'Komendy urządzenia (CDC)' : 'Device commands (CDC)'}
-                  </h4>
-                  <p className="mb-3 text-xs text-muted-foreground">
-                    {lang === 'pl'
-                      ? 'Wysyłane do połączonego portu szeregowego. Odpowiedzi pojawiają się powyżej jako linie zaczynające się od <code className="text-foreground/90">←</code>. Używaj, gdy urządzenie jest połączone.'
-                      : 'Sent to the connected serial port. Replies appear above as lines starting with <code className="text-foreground/90">←</code>. Use when the device is connected.'}
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground hover:bg-muted"
-                      onClick={() => {
-                        if (activePort) invoke('send_device_command', { portName: activePort, cmd: 'GET_STATE' }).catch(() => {})
-                      }}
-                    >
-                      {lang === 'pl' ? 'POBIERZ_STAN' : 'GET_STATE'}
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-md border border-border bg-card px-2 py-1.5 text-xs text-foreground hover:bg-muted"
-                      onClick={() => {
-                        if (
-                          window.confirm(
-                            lang === 'pl'
-                              ? 'Zresetować domyślne ustawienia urządzenia do wartości z firmware?'
-                              : 'Reset device defaults to firmware values?'
-                          )
-                        ) {
-                          if (activePort) invoke('send_device_command', { portName: activePort, cmd: 'RESET_DEFAULTS' }).catch(() => {})
-                        }
-                      }}
-                    >
-                      {lang === 'pl' ? 'RESETUJ_DOMYŚLNE' : 'RESET_DEFAULTS'}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end border-t border-border pt-6">
-              <button type="button" onClick={() => setSettingsOpen(false)} className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-accent-foreground transition-colors hover:bg-accent/90">
-                {lang === 'pl' ? 'Zamknij' : 'Close'}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SettingsSheet
+          lang={lang}
+          theme={theme}
+          autostartEnabled={autostartEnabled}
+          log={log}
+          canSendCommands={!!activePort}
+          appVersion={appVersion}
+          appUpdateInfo={appUpdateInfo}
+          appUpdateChecking={appUpdateChecking}
+          appUpdateInstalling={appUpdateInstalling}
+          appUpdateError={appUpdateError}
+          downloadProgress={downloadProgress}
+          deviceFw={device?.fw ?? null}
+          errorReportingEnabled={errorReportingConsent === true}
+          onThemeChange={setTheme}
+          onLangChange={setLang}
+          onAutostartChange={async (v) => {
+            try {
+              if (v) await enable()
+              else await disable()
+              setAutostartEnabled(v)
+              await invoke('save_autostart_preference', { enabled: v })
+            } catch {
+              /* ignore */
+            }
+          }}
+          onErrorReportingChange={(v) => {
+            void applyErrorReportingConsent(v)
+          }}
+          onGetState={() => {
+            if (activePort) invoke('send_device_command', { portName: activePort, cmd: 'GET_STATE' }).catch(() => {})
+          }}
+          onResetDefaults={() => {
+            if (activePort) invoke('send_device_command', { portName: activePort, cmd: 'RESET_DEFAULTS' }).catch(() => {})
+          }}
+          onCheckAppUpdate={async () => {
+            setAppUpdateError(null)
+            setAppUpdateChecking(true)
+            try {
+              const info = await invoke<AppUpdateInfo>('check_app_update')
+              setAppUpdateInfo(info)
+            } catch (e) {
+              setAppUpdateError(String(e))
+            } finally {
+              setAppUpdateChecking(false)
+            }
+          }}
+          onInstallAppUpdate={async () => {
+            setAppUpdateError(null)
+            setAppUpdateInstalling(true)
+            setDownloadProgress(null)
+            try {
+              await invoke('install_app_update')
+            } catch (e) {
+              setAppUpdateError(String(e))
+              setAppUpdateInstalling(false)
+            }
+          }}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+
+      {errorConsentReady && errorReportingConsent === null && (
+        <ErrorReportingConsentModal
+          lang={lang}
+          onAllow={() => {
+            void applyErrorReportingConsent(true)
+          }}
+          onDecline={() => {
+            void applyErrorReportingConsent(false)
+          }}
+        />
+      )}
+
+      {showConn && (
+        <div className="fixed inset-0 z-[15]" aria-hidden onClick={() => setShowConn(false)} />
       )}
     </div>
   )
 }
-
-function targetLabel(t: VolumeTarget, lang: Lang): string {
-  if (t.type === 'system') return lang === 'pl' ? 'Głośność systemu' : 'System volume'
-  if (t.type === 'mic') return lang === 'pl' ? 'Głośność mikrofonu' : 'Microphone volume'
-  if (t.type === 'category') {
-    return t.id === 'gry' ? (lang === 'pl' ? 'Gry' : 'Games') : t.id
-  }
-  return t.name && t.name.trim() ? t.name : lang === 'pl' ? `Aplikacja ${t.pid}` : `App ${t.pid}`
-}
-
-interface ControllerCardProps {
-  index: number
-  sliderIndex: number
-  showButtonMapping: boolean
-  binding: ButtonBinding
-  onBindingChange: (b: ButtonBinding) => void
-  hwSliderMute: boolean
-  onHwSliderMuteChange: (v: boolean) => void
-  lang: Lang
-  shortcutNeoOnShortcut: boolean
-  onShortcutNeoChange: (v: boolean) => void
-  value: number
-  targets: VolumeTarget[]
-  audioSessions: AudioSessionInfo[]
-  loadAudioSessions: () => void
-  onAssignmentsChange: (targets: VolumeTarget[]) => void
-}
-
-function bindingMode(b: ButtonBinding): 'none' | 'media' | 'shortcut' {
-  if (b.kind === 'none') return 'none'
-  if (b.kind === 'media') return 'media'
-  return 'shortcut'
-}
-
-function ControllerCard({
-  index,
-  sliderIndex,
-  showButtonMapping,
-  binding,
-  onBindingChange,
-  hwSliderMute,
-  onHwSliderMuteChange,
-  lang,
-  shortcutNeoOnShortcut,
-  onShortcutNeoChange,
-  value,
-  targets,
-  audioSessions,
-  loadAudioSessions,
-  onAssignmentsChange,
-}: ControllerCardProps) {
-  const [addOpen, setAddOpen] = useState(false)
-  const [recordingShortcut, setRecordingShortcut] = useState(false)
-  const captureRef = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (recordingShortcut) captureRef.current?.focus()
-  }, [recordingShortcut])
-  const [addSearch, setAddSearch] = useState('')
-  const [actionOpen, setActionOpen] = useState(() => binding.kind !== 'none')
-  const [assignmentsOpen, setAssignmentsOpen] = useState(false)
-
-  useEffect(() => {
-    if (binding.kind !== 'none') setActionOpen(true)
-  }, [binding.kind])
-
-  useEffect(() => {
-    if (!assignmentsOpen) setAddOpen(false)
-  }, [assignmentsOpen])
-
-  const actionSummary =
-    binding.kind === 'none'
-      ? lang === 'pl'
-        ? 'Brak'
-        : 'None'
-      : binding.kind === 'media'
-        ? lang === 'pl'
-          ? 'Klawisz multimediów'
-          : 'Media key'
-        : binding.label.trim()
-          ? binding.label
-          : lang === 'pl'
-            ? 'Brak skrótu'
-            : 'No shortcut'
-
-  const normalizeAppName = (name?: string) =>
-    (name || '').trim().toLowerCase().replace(/\.exe$/, '')
-  const percent = Math.round((value / 1023) * 100)
-  const activeSessions = audioSessions.filter((s) => s.is_active)
-  const allFiltered = addSearch.trim()
-    ? audioSessions.filter(
-        (s) =>
-          (s.name || '').toLowerCase().includes(addSearch.trim().toLowerCase()) ||
-          String(s.pid).includes(addSearch.trim())
-      )
-    : audioSessions
-
-  const removeTarget = (idx: number) => {
-    const next = targets.filter((_, i) => i !== idx)
-    onAssignmentsChange(next)
-  }
-
-  const addTarget = (t: VolumeTarget) => {
-    const targetAppName = t.type === 'app' ? normalizeAppName(t.name) : ''
-    if (
-      targets.some(
-        (x) =>
-          x.type === t.type &&
-          (x.type !== 'app' ||
-            normalizeAppName((x as { name?: string }).name) === targetAppName ||
-            x.pid === (t as { pid: number }).pid) &&
-          (x.type !== 'category' || (x as { id: string }).id === (t as { id: string }).id)
-      )
-    )
-      return
-    onAssignmentsChange([...targets, t])
-    setAddOpen(false)
-  }
-
-  return (
-    <article className="rounded-xl border border-border bg-card p-6 shadow-sm transition-shadow hover:shadow-md flex flex-col relative">
-      <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="rounded-lg bg-muted p-2">
-            <IconSliders className="h-5 w-5 text-foreground" />
-          </div>
-          <h3 className="font-medium text-foreground">Slider {index}</h3>
-        </div>
-        <div className="text-2xl font-bold text-foreground tabular-nums">{percent}%</div>
-      </div>
-      <div className="mb-6 h-2 overflow-hidden rounded-full bg-muted">
-        <div className="h-full bg-accent transition-all duration-300" style={{ width: `${percent}%` }} />
-      </div>
-      {showButtonMapping && (
-        <div className="mb-5 space-y-2 rounded-lg border border-border/70 bg-muted/30 p-3">
-          <button
-            type="button"
-            onClick={() => setActionOpen((o) => !o)}
-            className="w-full text-left"
-          >
-            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              {lang === 'pl' ? 'Przycisk' : 'Button'} {sliderIndex}{' '}
-              <span className="font-normal normal-case text-muted-foreground/80">
-                {lang === 'pl' ? '(ten suwak)' : '(this slider)'}
-              </span>
-            </p>
-            <p className="mt-1 text-xs text-muted-foreground">{actionSummary}</p>
-          </button>
-          <div className="flex flex-col gap-2">{actionOpen && (<> 
-            <label className="text-xs text-muted-foreground">
-              {lang === 'pl' ? 'Co wysłać w Windows' : 'What to send to Windows'}
-            </label>
-            <select
-              value={bindingMode(binding)}
-              onChange={(e) => {
-                const v = e.target.value as 'none' | 'media' | 'shortcut'
-                if (v === 'none') onBindingChange({ kind: 'none' })
-                else if (v === 'media')
-                  onBindingChange({
-                    kind: 'media',
-                    action: binding.kind === 'media' ? binding.action : 'play_pause',
-                  })
-                else
-                  onBindingChange(
-                    binding.kind === 'shortcut'
-                      ? binding
-                      : { kind: 'shortcut', vk: 0, mods: 0, label: '' },
-                  )
-              }}
-              className="w-full rounded-lg border border-border bg-card px-2 py-1.5 text-sm text-foreground outline-none focus:border-accent"
-            >
-              <option value="none">{lang === 'pl' ? 'Nic' : 'None'}</option>
-              <option value="media">{lang === 'pl' ? 'Klawisz multimediów' : 'Media key'}</option>
-              <option value="shortcut">{lang === 'pl' ? 'Skrót klawiszowy' : 'Keyboard shortcut'}</option>
-            </select>
-            {bindingMode(binding) === 'media' && (
-              <>
-                <label className="text-xs text-muted-foreground">{lang === 'pl' ? 'Wybór' : 'Choice'}</label>
-                <select
-                  value={binding.kind === 'media' ? binding.action : 'play_pause'}
-                  onChange={(e) =>
-                    onBindingChange({ kind: 'media', action: e.target.value as MediaKeyAction })
-                  }
-                  className="w-full rounded-lg border border-border bg-card px-2 py-1.5 text-sm text-foreground outline-none focus:border-accent"
-                >
-                  {MEDIA_ACTION_OPTIONS.filter((o) => o.value !== 'none').map((o) => (
-                    <option key={o.value} value={o.value}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              </>
-            )}
-            {bindingMode(binding) === 'shortcut' && (
-              <div className="space-y-2">
-                <p className="text-xs text-muted-foreground">
-                  {lang === 'pl' ? (
-                    <>
-                      Kliknij <strong className="text-foreground">Nagraj</strong>, potem naciśnij kombinację. Przy literach
-                      i cyfrach użyj co najmniej <strong className="text-foreground">Ctrl, Shift, Alt lub Win</strong>{' '}
-                      (F1–F12 i strzałki mogą być same). <kbd className="rounded bg-muted px-1">Esc</kbd> anuluje.
-                    </>
-                  ) : (
-                    <>
-                      Click <strong className="text-foreground">Record</strong>, then press the combination. For letters and
-                      digits, use at least <strong className="text-foreground">Ctrl, Shift, Alt or Win</strong>{' '}
-                      (F1–F12 and arrow keys can be alone). <kbd className="rounded bg-muted px-1">Esc</kbd> cancels.
-                    </>
-                  )}
-                </p>
-                <div className="rounded-md border border-border bg-card px-2 py-1.5 font-mono text-sm text-foreground">
-                  {binding.kind === 'shortcut' && binding.label.trim() ? binding.label : '— brak —'}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setRecordingShortcut((r) => !r)}
-                  className={`w-full rounded-lg border px-2 py-1.5 text-sm font-medium transition-colors ${
-                    recordingShortcut
-                      ? 'border-accent bg-accent/15 text-accent'
-                      : 'border-border bg-background text-foreground hover:bg-muted'
-                  }`}
-                >
-                  {recordingShortcut
-                    ? lang === 'pl'
-                      ? 'Nagrywanie… (Esc = stop)'
-                      : 'Recording… (Esc = stop)'
-                    : lang === 'pl'
-                      ? 'Nagraj skrót'
-                      : 'Record shortcut'}
-                </button>
-                {recordingShortcut && (
-                  <div
-                    ref={captureRef}
-                    tabIndex={0}
-                    role="textbox"
-                    aria-label="Shortcut capture"
-                    className="rounded-lg border-2 border-dashed border-accent bg-background/80 p-3 text-center text-xs text-muted-foreground outline-none ring-2 ring-accent/40"
-                    onKeyDown={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
-                      if (e.repeat) return
-                      if (e.code === 'Escape') {
-                        setRecordingShortcut(false)
-                        return
-                      }
-                      if (isModifierCode(e.code)) return
-                      const vk = keyboardCodeToVk(e.code)
-                      if (vk == null) return
-                      const mods = modifierMask(e)
-                      if (mods === 0 && !shortcutAllowedWithoutModifier(e.code)) return
-                      const label = shortcutLabelFromEvent(e)
-                      onBindingChange({ kind: 'shortcut', vk, mods, label })
-                      setRecordingShortcut(false)
-                    }}
-                  >
-                    {lang === 'pl' ? 'Naciśnij teraz skrót' : 'Press the shortcut now'}
-                  </div>
-                )}
-              </div>
-            )}
-          </>)}
-          <label className="mt-1 flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
-                className="rounded border-border"
-                checked={hwSliderMute}
-                onChange={(e) => onHwSliderMuteChange(e.target.checked)}
-              />
-              <span>{lang === 'pl' ? 'Wycisz suwak na urządzeniu' : 'Mute slider on device'}</span>
-            </label>
-            {!hwSliderMute && (
-              <label className="mt-1 flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-                <input
-                  type="checkbox"
-                  className="rounded border-border"
-                  checked={shortcutNeoOnShortcut}
-                  onChange={(e) => onShortcutNeoChange(e.target.checked)}
-                />
-                <span>
-                  {lang === 'pl'
-                    ? 'Neo przy skrócie (LED jak przy wyciszeniu, gdy używasz skrótu zamiast mute na suwaku)'
-                    : 'Neo on shortcut (LED like mute, when you use a keyboard shortcut instead of mute on the slider)'}
-                </span>
-              </label>
-            )}
-          </div>
-        </div>
-      )}
-      <div className="space-y-3">
-        <button
-          type="button"
-          className="w-full text-left"
-          onClick={() => setAssignmentsOpen((o) => !o)}
-        >
-          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            {lang === 'pl' ? 'Przypisania' : 'Assignments'} ({targets.length})
-          </p>
-        </button>
-        {assignmentsOpen && (
-          <div className="space-y-3">
-          {/* v0 design: full-width rows per assignment */}
-          {targets.map((t, i) => (
-            <div
-              key={
-                t.type === 'app'
-                  ? `app-${((t as { name?: string }).name || '').toLowerCase() || t.pid}`
-                  : t.type === 'category'
-                    ? `cat-${(t as { id: string }).id}`
-                    : 'system'
-              }
-              className="flex items-center justify-between rounded-lg border border-border bg-background p-3"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <div
-                  className={`h-2 w-2 shrink-0 rounded-full ${
-                    t.type === 'system' ? 'bg-accent' : t.type === 'app' ? 'bg-blue-500' : 'bg-orange-500'
-                  }`}
-                />
-                <span className="text-sm text-foreground truncate">{targetLabel(t, lang)}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => removeTarget(i)}
-                className="shrink-0 text-muted-foreground hover:text-destructive focus:outline-none focus:ring-1 focus:ring-accent rounded p-0.5"
-                aria-label={lang === 'pl' ? 'Usuń' : 'Remove'}
-              >
-                <IconX className="h-4 w-4" />
-              </button>
-            </div>
-          ))}
-          {/* v0: dashed "+ Add assignment" button */}
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => {
-                setAddOpen((o) => !o)
-                if (!addOpen) loadAudioSessions()
-              }}
-              className="w-full rounded-lg border border-dashed border-border bg-background px-3 py-2 text-sm text-muted-foreground transition-colors hover:border-accent hover:text-accent focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-2 focus:ring-offset-card"
-            >
-              {lang === 'pl' ? '+ Dodaj przypisanie' : '+ Add assignment'}
-            </button>
-            {addOpen && (
-              <>
-                <div className="absolute z-[100] top-full left-0 right-0 mt-1.5 rounded-lg border border-border bg-card shadow-xl overflow-hidden flex flex-col w-full min-w-[240px] max-h-[min(480px,80vh)]">
-                  {/* Górna część: System, Categories, Currently playing — stała wysokość, bez ściskania */}
-                  <div className="p-2 flex flex-col gap-1 shrink-0">
-                    <button
-                      type="button"
-                      className="w-full text-left text-sm text-foreground hover:bg-muted rounded-md px-3 py-2 transition-colors"
-                      onClick={() => addTarget({ type: 'system' })}
-                    >
-                      {lang === 'pl' ? 'Głośność systemu' : 'System volume'}
-                    </button>
-                    <button
-                      type="button"
-                      className="w-full text-left text-sm text-foreground hover:bg-muted rounded-md px-3 py-2 transition-colors"
-                      onClick={() => addTarget({ type: 'mic' })}
-                    >
-                      {lang === 'pl' ? 'Głośność mikrofonu' : 'Microphone volume'}
-                    </button>
-                    <div className="border-t border-border my-1" />
-                    <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground px-3 pt-1 pb-0.5">
-                      {lang === 'pl' ? 'Kategorie' : 'Categories'}
-                    </p>
-                    <button
-                      type="button"
-                      className="w-full text-left text-sm text-foreground hover:bg-muted rounded-md px-3 py-2 flex items-center gap-2 transition-colors"
-                      onClick={() => addTarget({ type: 'category', id: 'gry' })}
-                    >
-                      <span className="shrink-0">🎮</span> {lang === 'pl' ? 'Gry' : 'Games'}
-                    </button>
-                    <div className="border-t border-border my-1" />
-                    <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground px-3 pt-1 pb-0.5">
-                      {lang === 'pl' ? 'Aktualnie grane' : 'Currently playing'}
-                    </p>
-                    {activeSessions.length === 0 ? (
-                      <p className="text-xs text-muted-foreground px-3 py-2">
-                        {lang === 'pl' ? 'Brak aktywnych' : 'None active'}
-                      </p>
-                    ) : (
-                      activeSessions.slice(0, 8).map((s) => (
-                        <button type="button" key={s.pid} className="w-full text-left text-sm text-foreground hover:bg-muted rounded-md px-3 py-2 truncate transition-colors" onClick={() => addTarget({ type: 'app', pid: s.pid, name: s.name })}>
-                          {s.name || `PID ${s.pid}`}
-                        </button>
-                      ))
-                    )}
-                  </div>
-                  {/* All applications: zajmuje resztę miejsca, lista ma własny scroll */}
-                  <div className="border-t border-border flex flex-col flex-1 min-h-0 p-2">
-                    <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground px-3 pt-0.5 pb-1">
-                      {lang === 'pl' ? 'Wszystkie aplikacje' : 'All applications'}
-                    </p>
-                    <input
-                      type="text"
-                      placeholder={lang === 'pl' ? 'Szukaj…' : 'Search…'}
-                      value={addSearch}
-                      onChange={(e) => setAddSearch(e.target.value)}
-                      className="rounded-md border border-border bg-background text-foreground text-sm px-3 py-2 w-full mb-2 focus:outline-none focus:ring-1 focus:ring-accent shrink-0"
-                    />
-                    <div className="flex-1 min-h-[140px] overflow-y-auto rounded-md border border-border/50 bg-background/50">
-                      {allFiltered.length === 0 ? (
-                        <p className="text-xs text-muted-foreground px-3 py-4 text-center">
-                          {addSearch.trim() ? (lang === 'pl' ? 'Brak wyników' : 'No results') : (lang === 'pl' ? 'Ładowanie…' : 'Loading…')}
-                        </p>
-                      ) : (
-                        <div className="py-0.5 space-y-0.5">
-                          {allFiltered.map((s) => (
-                            <button type="button" key={s.pid} className="w-full text-left text-sm text-foreground hover:bg-muted rounded-md px-3 py-2 truncate flex items-center gap-2 transition-colors" onClick={() => addTarget({ type: 'app', pid: s.pid, name: s.name })}>
-                              {s.is_game && <span className="shrink-0">🎮</span>}
-                              {s.name || `PID ${s.pid}`}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-                <div className="fixed inset-0 z-[90]" aria-hidden onClick={() => setAddOpen(false)} />
-              </>
-            )}
-          </div>
-          </div>
-        )}
-      </div>
-    </article>
-  )
-}
-
-// Legacy: ControllerCard pozostaje w pliku jako historyczny komponent,
-// ale obecnie UI używa `V0ControllerCard`. Dzięki temu TypeScript nie zgłasza noUnusedLocals.
-void ControllerCard
 
 export default App

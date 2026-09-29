@@ -1,0 +1,3 @@
+# ideiMx Hardware Controller (VID: 0x0483, PID: 0x5750)
+# Allows non-root access to hidraw for IDEI Control on Linux.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="5750", MODE="0666", TAG+="uaccess"

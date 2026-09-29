@@ -58,10 +58,20 @@ pub fn volume_targets_conflict(a: &VolumeTarget, b: &VolumeTarget) -> bool {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AudioSessionInfo {
     pub pid: u32,
+    /// Stabilna nazwa do przypisania (np. `Spotify` / `Spotify.exe`).
     pub name: String,
-    /// Czy sesja ma aktualnie odtwarzany dźwięk (stan Active).
+    /// Plik wykonywalny, gdy znany (np. `Discord.exe`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exe_name: Option<String>,
+    /// Przyjazna nazwa wyświetlana (Display Name sesji), jeśli dostępna.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Sesja w stanie Active (Core Audio / Pulse).
     #[serde(default)]
     pub is_active: bool,
+    /// Aktualnie generuje sygnał (peak > próg lub Active).
+    #[serde(default)]
+    pub is_playing: bool,
     /// Czy proces uznany za grę (Steam, Epic, Minecraft, Origin itd.).
     #[serde(default)]
     pub is_game: bool,
@@ -349,12 +359,16 @@ fn set_microphone_volume_impl(level: f32) -> Result<(), String> {
 
 #[cfg(windows)]
 fn get_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>, String> {
+    use std::collections::HashMap;
     use std::mem;
     use windows::core::Interface;
+    use windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
     use windows::Win32::Media::Audio::{AudioSessionStateActive, EDataFlow, ERole};
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, COINIT_APARTMENTTHREADED, CLSCTX_ALL,
     };
+
+    const PEAK_PLAYING_THRESHOLD: f32 = 0.001;
 
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok();
@@ -375,7 +389,10 @@ fn get_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>, String> {
         let count = enumerator_sessions
             .GetCount()
             .map_err(|e| format!("GetCount: {}", e))?;
-        let mut out = Vec::new();
+
+        // Klucz = znormalizowana nazwa procesu — bez duplikatów (wiele sesji Chrome itd.).
+        let mut by_key: HashMap<String, AudioSessionInfo> = HashMap::new();
+
         for idx in 0..count {
             let session: windows::Win32::Media::Audio::IAudioSessionControl = enumerator_sessions
                 .GetSession(idx)
@@ -384,43 +401,112 @@ fn get_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>, String> {
                 .cast()
                 .map_err(|e| format!("IAudioSessionControl2: {}", e))?;
             let pid = session2.GetProcessId().unwrap_or(0);
-            let display_name = session
+            if pid == 0 {
+                continue;
+            }
+
+            let session_display = session
                 .GetDisplayName()
                 .ok()
                 .and_then(|pwstr| pwstr.to_string().ok())
-                .unwrap_or_else(String::new);
-            let display_name = display_name.trim().to_string();
-            let process_name = get_process_path_impl(pid)
-                .and_then(|p| {
-                    std::path::Path::new(&p)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                })
-                .unwrap_or_default();
-            let resolved_name = if !process_name.trim().is_empty() {
-                process_name
-            } else if !display_name.is_empty() {
-                display_name
-            } else {
-                format!("PID {}", pid)
-            };
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty() && !s.starts_with('@'));
+
+            let path = get_process_path_impl(pid);
+            let exe_name = path.as_ref().and_then(|p| {
+                std::path::Path::new(p)
+                    .file_name()
+                    .map(|s| s.to_string_lossy().to_string())
+            });
+            let stem = path.as_ref().and_then(|p| {
+                std::path::Path::new(p)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+            });
+
+            let name = exe_name
+                .clone()
+                .or_else(|| stem.clone())
+                .or_else(|| session_display.clone())
+                .unwrap_or_else(|| format!("PID {}", pid));
+
+            let display_name = session_display
+                .filter(|d| normalize_app_name(d) != normalize_app_name(&name))
+                .or_else(|| {
+                    stem.filter(|s| {
+                        exe_name
+                            .as_ref()
+                            .map(|e| normalize_app_name(e) != normalize_app_name(s))
+                            .unwrap_or(true)
+                    })
+                });
+
             let is_active = session
                 .GetState()
                 .map(|s| s == AudioSessionStateActive)
                 .unwrap_or(false);
-            let is_game = pid != 0
-                && get_process_path_impl(pid)
-                    .as_deref()
-                    .map_or(false, is_game_path);
-            if pid != 0 {
-                out.push(AudioSessionInfo {
-                    pid,
-                    name: resolved_name,
-                    is_active,
-                    is_game,
-                });
+
+            let peak = session
+                .cast::<IAudioMeterInformation>()
+                .ok()
+                .and_then(|m| m.GetPeakValue().ok())
+                .unwrap_or(0.0);
+            let is_playing = is_active || peak > PEAK_PLAYING_THRESHOLD;
+
+            let is_game = path.as_deref().map_or(false, is_game_path);
+            let key = normalize_app_name(&name);
+            if key.is_empty() {
+                continue;
+            }
+
+            match by_key.get_mut(&key) {
+                Some(existing) => {
+                    if is_playing {
+                        existing.is_playing = true;
+                    }
+                    if is_active {
+                        existing.is_active = true;
+                    }
+                    if existing.display_name.is_none() && display_name.is_some() {
+                        existing.display_name = display_name;
+                    }
+                    if existing.exe_name.is_none() && exe_name.is_some() {
+                        existing.exe_name = exe_name;
+                    }
+                    // Preferuj PID aktywnej / grającej sesji.
+                    if is_playing || (is_active && !existing.is_playing) {
+                        existing.pid = pid;
+                    }
+                }
+                None => {
+                    by_key.insert(
+                        key,
+                        AudioSessionInfo {
+                            pid,
+                            name,
+                            exe_name,
+                            display_name,
+                            is_active,
+                            is_playing,
+                            is_game,
+                        },
+                    );
+                }
             }
         }
+
+        let mut out: Vec<AudioSessionInfo> = by_key.into_values().collect();
+        out.sort_by(|a, b| {
+            match (b.is_playing, a.is_playing) {
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                _ => a
+                    .name
+                    .to_lowercase()
+                    .cmp(&b.name.to_lowercase())
+                    .then_with(|| a.pid.cmp(&b.pid)),
+            }
+        });
         Ok(out)
     }
 }

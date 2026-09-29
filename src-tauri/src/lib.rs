@@ -1,8 +1,9 @@
+mod app_update;
 mod audio;
 mod config;
+mod error_reporting;
+mod hid;
 mod media_keys;
-mod serial;
-mod telemetry;
 
 #[cfg(target_os = "linux")]
 mod audio_linux;
@@ -17,23 +18,23 @@ use tauri::{
     Manager,
 };
 
-/// Monitor uśpienia/wybudzenia. Na Windows obsługa wybudzenia opiera się na auto-reconnect:
-/// gdy port po uśpieniu przestanie odpowiadać, read_loop wyemituje device-disconnected,
-/// a wątek monitorujący porty sam wykryje powrót urządzenia i zreconnectuje.
+/// Monitor uśpienia/wybudzenia. Po wybudzeniu hot-plug HID sam reconnectuje urządzenie.
 #[cfg(any(windows, not(windows)))]
 mod power_events {
     use tauri::AppHandle;
 
     pub fn start_power_monitor(_app: AppHandle) {
-        // Stub: wybudzenie obsługiwane przez utratę połączenia w read_loop + auto-reconnect.
+        // Stub: wybudzenie obsługiwane przez utratę połączenia w read_loop + hot-plug HID.
     }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    telemetry::load_dotenv();
+    error_reporting::load_dotenv();
+    error_reporting::install_panic_hook();
     tauri::Builder::default()
-        .manage(serial::SerialState::new())
+        .manage(hid::HidState::new())
+        .manage(app_update::PendingAppUpdate(std::sync::Mutex::new(None)))
         .on_window_event(|window, event| {
             // Po utracie fokusu: jeśli okno jest zminimalizowane, chowamy je do tray (znika z paska zadań)
             if let tauri::WindowEvent::Focused(false) = event {
@@ -43,48 +44,73 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            serial::list_serial_ports,
-            serial::get_port_names,
-            serial::scan_idei_ports,
-            serial::start_scan_idei_ports,
-            serial::connect_serial,
-            serial::disconnect_serial,
-            serial::get_connection_status,
-            serial::get_connected_devices,
-            serial::get_slider_values,
-            serial::get_volume_assignments,
-            serial::set_volume_assignment,
-            serial::get_app_config,
-            serial::save_app_config,
-            serial::save_autostart_preference,
-            serial::notify_disconnected,
-            serial::send_device_command,
-            serial::set_button_media_keys,
-            serial::get_button_media_keys,
-            serial::get_button_bindings,
-            serial::set_button_bindings,
-            serial::get_button_hw_slider_mute,
-            serial::set_button_hw_slider_mute,
-            serial::get_shortcut_mute_led_map,
-            serial::set_shortcut_mute_led_map,
+            hid::list_hid_devices,
+            hid::get_device_paths,
+            hid::scan_idei_devices,
+            hid::start_scan_idei_devices,
+            hid::start_scan_idei_ports,
+            hid::connect_device,
+            hid::connect_serial,
+            hid::disconnect_device,
+            hid::disconnect_serial,
+            hid::get_connection_status,
+            hid::get_connected_devices,
+            hid::get_slider_values,
+            hid::get_volume_assignments,
+            hid::set_volume_assignment,
+            hid::get_app_config,
+            hid::save_app_config,
+            hid::save_autostart_preference,
+            hid::get_profiles,
+            hid::set_active_profile,
+            hid::save_current_profile,
+            hid::create_profile,
+            hid::rename_profile,
+            hid::delete_profile,
+            hid::notify_disconnected,
+            hid::send_device_command,
+            hid::set_led_color,
+            hid::set_button_media_keys,
+            hid::get_button_media_keys,
+            hid::get_button_bindings,
+            hid::set_button_bindings,
+            hid::get_button_hw_slider_mute,
+            hid::set_button_hw_slider_mute,
+            hid::get_shortcut_mute_led_map,
+            hid::set_shortcut_mute_led_map,
+            hid::get_shortcut_led_mode,
+            hid::set_shortcut_led_mode,
+            hid::get_shortcut_led_latched,
             audio::get_system_volume,
             audio::set_system_volume,
             audio::get_audio_sessions,
-            telemetry::send_telemetry,
+            error_reporting::report_frontend_error,
+            error_reporting::get_error_reporting_consent,
+            error_reporting::set_error_reporting_consent,
+            app_update::get_app_version,
+            app_update::check_app_update,
+            app_update::install_app_update,
         ])
         .setup(|app| {
             let config = config::load_config(app.handle());
-            if let Some(state) = app.try_state::<serial::SerialState>() {
+            error_reporting::sync_consent_from_config(app.handle());
+
+            #[cfg(desktop)]
+            {
+                let _ = app.handle().plugin(
+                    tauri_plugin_updater::Builder::new()
+                        .build(),
+                );
+            }
+
+            if let Some(state) = app.try_state::<hid::HidState>() {
                 if let Some(ref port) = config.last_port {
                     if let Ok(mut last) = state.last_connected_port.lock() {
                         *last = Some(port.clone());
                     }
                 }
                 state.button_media_keys.store(true, Ordering::SeqCst);
-                serial::start_port_presence_monitor(app.handle().clone(), &state);
-                // Nie wstrzykujemy przypisań ani map przycisków z globalnego configu
-                // do domyślnego stanu. Każde urządzenie startuje „na pusto”, a użytkownik
-                // świadomie ładuje preset lub konfiguruje suwak/przycisk samodzielnie.
+                hid::start_hid_presence_monitor(app.handle().clone(), &state);
             }
 
             // Zasobnik: ikona + menu (Pokaż okno, Zamknij)
@@ -134,7 +160,6 @@ pub fn run() {
                 None,
             ));
 
-            // Uruchom monitor uśpienia/wybudzenia (Windows)
             #[cfg(windows)]
             {
                 let app_power = app.handle().clone();

@@ -296,12 +296,22 @@ pub fn get_audio_sessions_impl() -> Result<Vec<AudioSessionInfo>, String> {
             if seen.insert(row.pid) {
                 out.push(AudioSessionInfo {
                     pid: row.pid,
-                    name: row.name,
+                    name: row.name.clone(),
+                    exe_name: Some(row.name.clone()),
+                    display_name: None,
                     is_active: row.is_active,
+                    is_playing: row.is_active,
                     is_game: row.is_game,
                 });
             }
         }
+        out.sort_by(|a, b| {
+            match (b.is_playing, a.is_playing) {
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            }
+        });
         Ok(out)
     })
 }

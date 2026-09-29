@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: >-
+              --bundles nsis,msi
+              --config {"bundle":{"createUpdaterArtifacts":true}}
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build & publish (Tauri)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          IDEI_ERROR_REPORT_URL: ${{ secrets.IDEI_ERROR_REPORT_URL }}
+          IDEI_ERROR_REPORT_TOKEN: ${{ secrets.IDEI_ERROR_REPORT_TOKEN }}
+        with:
+          projectPath: .
+          tagName: ${{ github.ref_name }}
+          releaseName: IDEI Control ${{ github.ref_name }}
+          releaseBody: |
+            ## IDEI Control ${{ github.ref_name }}
+
+            Desktop companion for **ideiMx** USB hardware mixers.
+
+            ### Downloads
+            - Windows: NSIS (`.exe`) and MSI installers below
+            - Auto-update metadata: `latest.json` (signed)
+
+            Plug in your device over USB — Custom HID, no drivers required on Windows.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }}

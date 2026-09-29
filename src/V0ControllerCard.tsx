@@ -27,7 +27,10 @@ export type VolumeTarget =
 export interface AudioSessionInfo {
   pid: number
   name: string
+  exe_name?: string
+  display_name?: string
   is_active?: boolean
+  is_playing?: boolean
   is_game?: boolean
 }
 

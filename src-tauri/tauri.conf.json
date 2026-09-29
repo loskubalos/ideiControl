@@ -24,6 +24,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": false,
     "targets": ["nsis", "msi", "deb", "appimage"],
     "icon": [
       "icons/32x32.png",
@@ -31,6 +32,22 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/udev/rules.d/99-ideimx.rules": "extra/99-ideimx.rules"
+        }
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "REPLACE_WITH_TAURI_UPDATER_PUBLIC_KEY",
+      "endpoints": [
+        "https://github.com/loskubalos/ideiControl/releases/latest/download/latest.json"
+      ],
+      "dialog": false
+    }
   }
 }

@@ -1,162 +1,125 @@
 # IDEI Control
 
-Desktop companion for **IDEI** USB hardware mixers. Slider positions are read over USB CDC and mapped to **system**, **per-app**, **microphone**, or **game** volume — with optional media keys and keyboard shortcuts on device buttons.
+Desktop companion app for **[ideiMx](https://loskubalos.eu.org/ideiMx)** USB hardware mixers — map physical sliders to system / per-app / mic volume, with button shortcuts and NeoPixel feedback.
+
+**Repository:** [github.com/loskubalos/ideiControl](https://github.com/loskubalos/ideiControl)  
+**Stack:** [Tauri 2](https://tauri.app/) · React · TypeScript · Rust  
+**Hardware link:** USB **Custom HID** (`VID:PID 0483:5750`) — plug & play on Windows; Linux needs a one-time udev rule.
 
 | | Windows | Linux |
 |---|---------|-------|
-| **Audio** | Core Audio | PulseAudio (PipeWire-compatible) |
-| **Buttons** | Win32 `SendInput` | X11 via `enigo` |
-| **Installers** | NSIS, MSI | `.deb`, AppImage |
-
-**Stack:** [Tauri 2](https://tauri.app/) · React · TypeScript · Rust
-
-**Supported hardware:** `ideiMx` (3 sliders) · `ideiMx-max` (5 sliders) — requires [IdeiMX](https://loskubalos.eu.org/ideiMx) STM32 firmware on the device.
+| Audio | Core Audio | PulseAudio / PipeWire |
+| Buttons / shortcuts | `SendInput` | X11 (`enigo`) |
+| Installers | NSIS, MSI | `.deb`, AppImage |
+| Auto-update | GitHub Releases + Tauri Updater | same |
 
 ---
 
 ## Download
 
-Pre-built installers are published on **[GitHub Releases](https://github.com/loskubalos/ideiControl/releases)**.
+Pre-built binaries: **[GitHub Releases](https://github.com/loskubalos/ideiControl/releases)**.
 
-| Platform | File | Install |
-|----------|------|---------|
-| **Windows** | `IDEI Control_*_x64-setup.exe` or `.msi` | Run the installer |
-| **Linux (general)** | `IDEI Control_*_amd64.AppImage` | `chmod +x` → run |
-| **Linux (Debian/Ubuntu)** | `idei-control_*_amd64.deb` | `sudo dpkg -i idei-control_*.deb` |
----
+In-app updater endpoint:
 
-## Quick start
-
-1. Install IDEI Control and plug in your mixer over USB.
-2. Open the app and click **Refresh** if the port list is empty.
-3. Select the port (`COMx` on Windows, `/dev/ttyACM0` on Linux) and click **Connect**.
-4. Assign each slider under **Assignments** (System, Mic, App, Games).
-5. Move sliders — assigned volumes update in real time.
-6. Save layouts as **Presets**; map **Buttons** to media keys or shortcuts.
-
-### Linux — USB access
-
-Add your user to the `dialout` group, then log out and back in:
-
-```bash
-sudo usermod -aG dialout "$USER"
+```text
+https://github.com/loskubalos/ideiControl/releases/latest/download/latest.json
 ```
 
-If the device is plugged in but never appears, **ModemManager** may be holding the port (common on Ubuntu). Stop it temporarily to test:
+---
+
+## Quick start (users)
+
+1. Install IDEI Control and plug in the mixer over USB.
+2. The app detects the device automatically (Scan / Connect if needed).
+3. Assign each slider (System, Mic, App, Games) and optionally map buttons.
+4. Optional: allow anonymous error reports in Settings (opt-in).
+
+### Linux — USB HID permissions
+
+Without udev rules, opening the device may require root. The `.deb` package installs the rule automatically. For AppImage / source builds:
 
 ```bash
-sudo systemctl stop ModemManager
+sudo cp src-tauri/extra/99-ideimx.rules /etc/udev/rules.d/
+# or:
+sudo bash src-tauri/extra/install-udev.sh
+sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-Unplug the device, plug it back in, and refresh the port list in the app.
-
-### Linux — audio & buttons
-
-- **Volume:** PipeWire or PulseAudio must be running (`pactl info`).
-- **Media keys / shortcuts:** require X11 or XWayland; pure Wayland sessions may not receive simulated keys.
+Then unplug/replug the device.
 
 ---
 
-## Features
+## Local development
 
-- USB CDC connect, auto-reconnect, and multi-device support (one port per device)
-- Multiple volume targets per slider
-- Per-app and game-category volume via active audio sessions
-- Presets (stored in `localStorage`)
-- Per-button media keys or keyboard shortcuts
-- Hardware mute vs PC-handled mute (`SET_HW_MUTE_BTN_MAP` firmware command)
-- System tray and optional launch at login
-- Light / dark theme
-
----
-
-## Configuration
-
-Assignments, last port, and preferences are stored in the OS app-data directory:
-
-| OS | Path |
-|----|------|
-| Windows | `%APPDATA%\com.idei.control\config.json` |
-| Linux | `~/.config/com.idei.control/config.json` |
-
----
-
-## Development
-
-### Prerequisites
-
-**Windows**
-
-- [Node.js](https://nodejs.org/) 20+
-- [Rust](https://rustup.rs)
-- Visual Studio Build Tools — *Desktop development with C++*
-
-**Linux**
+**Requirements (Windows):** Node.js, Rust (`rustup`), MSVC Build Tools.
 
 ```bash
-sudo apt install -y build-essential pkg-config libssl-dev \
-  libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
-  libpulse-dev libx11-dev libxtst-dev
-```
-
-### Run locally
-
-```bash
-git clone https://github.com/loskubalos/ideiControl.git
-cd idei-control
 npm install
 npm run tauri dev
 ```
 
-### Release build
+Production build (no updater signing required locally):
 
 ```bash
 npm run tauri build
 ```
 
-| Output | Location |
-|--------|----------|
-| Windows `.exe` | `src-tauri/target/release/idei-control.exe` |
-| Windows installers | `src-tauri/target/release/bundle/nsis/` · `bundle/msi/` |
-| Linux `.deb` | `src-tauri/target/release/bundle/deb/` |
-| Linux AppImage | `src-tauri/target/release/bundle/appimage/` |
+`bundle.createUpdaterArtifacts` stays `false` in `tauri.conf.json` so local builds do **not** need `TAURI_SIGNING_PRIVATE_KEY`. CI enables updater artifacts only on tagged releases.
 
-### Scripts
-
-| Command | Description |
-|---------|-------------|
-| `npm run tauri dev` | Desktop app with hot reload |
-| `npm run tauri build` | Production build and installers |
-| `npm run dev` | Vite dev server (UI only) |
-| `npm run build` | Frontend production bundle |
-| `npm run icon` | Regenerate icons from `src-tauri/app-icon.png` |
-| `npm run lint` | ESLint |
-
-### Optional telemetry
-
-Anonymous usage events via [Umami](https://umami.is/). Disabled unless configured at build time:
+Optional PocketBase error reporting — copy env and fill secrets (never commit `.env`):
 
 ```bash
 cp src-tauri/.env.example src-tauri/.env
-# Set IDEI_TELEMETRY_* — do not commit .env
+# set IDEI_ERROR_REPORT_URL and IDEI_ERROR_REPORT_TOKEN
 ```
 
 ---
 
-## Project structure
+## Auto-updater & GitHub Actions (maintainers)
+
+Releases are built by [`.github/workflows/release.yml`](.github/workflows/release.yml) on tags matching `v*` (e.g. `v0.1.1`).
+
+### 1. Generate a signing key pair
+
+```bash
+npm run tauri signer generate -w ~/.tauri/ideiControl.key
+```
+
+- **Private key** → GitHub Secret `TAURI_SIGNING_PRIVATE_KEY` (paste file contents; password → `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` if set).
+- **Public key** → paste into `src-tauri/tauri.conf.json` → `plugins.updater.pubkey` (safe to commit).
+
+### 2. GitHub Secrets (`Settings → Secrets and variables → Actions`)
+
+| Secret | Purpose |
+|--------|---------|
+| `TAURI_SIGNING_PRIVATE_KEY` | Signs installers / `latest.json` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Key password (optional) |
+| `IDEI_ERROR_REPORT_URL` | PocketBase records endpoint (baked into release builds) |
+| `IDEI_ERROR_REPORT_TOKEN` | `X-App-Token` for PocketBase |
+| `GITHUB_TOKEN` | Provided automatically by Actions |
+
+### 3. Publish a version
+
+1. Bump `version` in `src-tauri/tauri.conf.json` (and `package.json` if needed).
+2. Commit, then:
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+3. The workflow builds Windows NSIS + MSI, creates a GitHub Release, and uploads signed updater metadata (`latest.json`).
+
+---
+
+## Project layout
 
 ```
-├── src/                      React UI
+├── .github/workflows/release.yml
+├── src/                      # React UI
 ├── src-tauri/
-│   ├── src/
-│   │   ├── serial.rs         USB CDC and device protocol
-│   │   ├── audio.rs          Windows volume control
-│   │   ├── audio_linux.rs    Linux PulseAudio volume control
-│   │   ├── media_keys.rs     Windows input simulation
-│   │   ├── media_keys_linux.rs
-│   │   ├── config.rs
-│   │   └── lib.rs
-│   ├── icons/
+│   ├── extra/99-ideimx.rules # Linux udev
+│   ├── src/                  # Rust
 │   └── tauri.conf.json
 ├── package.json
 └── README.md
@@ -164,6 +127,6 @@ cp src-tauri/.env.example src-tauri/.env
 
 ---
 
-## License
+## Hardware
 
-Free for **non-commercial** use. You may use, modify, and redistribute the software and your own versions, provided you keep the same license and do not use it commercially. See [LICENSE](LICENSE).
+Firmware for the STM32 controller is separate from this desktop app. Product page: [ideiMx](https://loskubalos.eu.org/ideiMx).
